@@ -1,0 +1,38 @@
+#!/system/bin/sh
+###################################
+#
+# @file		ppp.disconnect
+# @brief	kill pppd and pppoe
+# @version	1.0
+# @date		20140624
+# @author	Design	:ChengYaKe/20110523
+# @author	Code	:ChengYaKe/20110523
+# @author	Modify	:chenwei/20140624
+# @copr		Tag	:www.zte.com.cn
+#
+#####################################
+
+if [  -f "/data/ppp/pppd.pid" ] ; then
+	echo "pppd-disconnect: pppd is being stop!"
+	PPPD_PID=`/system/bin/cat /data/ppp/pppd.pid`> /dev/null 2>&1
+	/system/bin/kill $PPPD_PID > /dev/null 2>&1
+
+fi
+if [  -f "/data/ppp/pppoe.pid" ] ; then
+	echo "pppoe-disconnect:pppoe is being stop!"
+	PPPOE_PID=`/system/bin/cat /data/ppp/pppoe.pid`> /dev/null 2>&1
+	system/bin/kill $PPPOE_PID > /dev/null 2>&1
+fi
+
+# Kill pppd again, in case it's still hanging around
+	PPPD_PID=`/system/bin/cat /data/ppp/pppd.pid` > /dev/null 2>&1
+	/system/bin/kill $PPPD_PID 2&1>/dev/null
+
+
+# Kill pppoe again, in case it's still hanging around
+	PPPOE_PID=`/system/bin/cat /data/ppp/pppoe.pid` > /dev/null 2>&1
+	/system/bin/kill $PPPOE_PID 2&1>/dev/null
+
+
+/system/bin/rm /data/ppp/pppd.pid
+/system/bin/rm /data/ppp/pppoe.pid

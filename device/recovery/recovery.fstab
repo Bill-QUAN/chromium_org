@@ -1,0 +1,12 @@
+# mount point	fstype		device			device2
+ubootwhole /ubootwhole mtd   default default
+boot /boot   mtd      default default
+aml_logo /logo     mtd      default default
+# From weilaixin by liuxiang SVN 4170
+/dev/block/mmcblk0p7 /recovery ext4      default default
+/dev/block/mmcblk0p2 /system   ext4     default default
+/dev/block/mmcblk0p5 /cache    ext4     default default
+/dev/block/mmcblk0p6 /data   ext4     default default
+/dev/block/cardblksd# /sdcard   vfat     default default
+/dev/block/sda# /udisk      vfat       default default
+/dev/block/mmcblk0p1 /rootfs ext4   default default

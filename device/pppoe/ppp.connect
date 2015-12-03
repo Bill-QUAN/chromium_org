@@ -1,0 +1,59 @@
+#!/system/bin/sh
+###################################
+#
+# @file		ppp.connect
+# @brief	run pppd and pppoe
+# @version	1.0
+# @date		20140624
+# @author	Design	:ChengYaKe/20110523
+# @author	Code	:ChengYaKe/20110523
+# @author	Modify	:chenwei/20140624
+# @copr		Tag	:www.zte.com.cn
+#
+#####################################
+
+
+if [ ! -r "/data/ppp" ] ; then
+	echo "please chmod u+r /data/ppp"
+	exit 1
+fi
+if [ ! -w "/data/ppp" ] ; then
+	echo "please chmod u+w /data/ppp"
+	exit 1
+fi
+if [ ! -x "/data/ppp" ] ; then
+	echo "please chmod u+x /data/ppp"
+	exit 1
+fi
+if [ ! -r "/data/ppp/ppp.conf" ] ; then
+	echo "couldn't find it here or chmod u+r /data/ppp/ppp.conf"
+	exit 1
+fi
+
+#export /data/ppp/ppp.conf
+. /data/ppp/ppp.conf
+
+IFACE=$(/system/bin/getprop pppoe.ifname)
+USER=$(/system/bin/getprop pppoe.usrname)
+PASSWORD=$(/system/bin/getprop pppoe.pwd)
+
+/system/xbin/busybox  /system/bin/ifconfig $IFACE up
+if [  -f "/data/ppp/pppd.pid" ] ; then
+	echo "pppd-status: pppd is running!
+		I will stop it frist"
+	. /data/ppp/ppp.disconnect
+fi
+if [  -f "/data/ppp/pppoe.pid" ] ; then
+	echo "pppoe-status: pppoe is running!
+		I will stop it frist"
+	. /data/ppp/ppp.disconnect
+fi
+
+echo "pppoe prog" > /data/ppp/ppp.log 2>&1
+
+/system/xbin/busybox setsid /system/bin/pppd pty " /system/bin/pppoe -p /data/ppp/pppoe.pid -I $IFACE -T 80 -U -m 1412 " noipdefault noauth default-asyncmap defaultroute hide-password nodetach $DNS mtu $MTU mru $MRU noaccomp nodeflate nopcomp novj novjccomp user "$USER" password "$PASSWORD" lcp-echo-interval $WAIT_TIME lcp-echo-failure $TIMES &
+
+echo "$!" > /data/ppp/pppd.pid
+echo "pppoe build" > /data/ppp/ppp.log 2>&1
+
+#setprop net.dns1 8.8.8.8

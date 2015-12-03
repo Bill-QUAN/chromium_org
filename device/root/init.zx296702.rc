@@ -1,0 +1,88 @@
+on init
+    # mount debugfs
+    mount debugfs /sys/kernel/debug /sys/kernel/debug
+
+    # See storage config details at http://source.android.com/tech/storage/
+    mkdir /mnt/shell/emulated 0700 shell shell
+    mkdir /storage/emulated 0555 root root
+    mkdir /mnt/usb 0000 system system
+
+    export EXTERNAL_STORAGE /storage/emulated/legacy
+    export EMULATED_STORAGE_SOURCE /mnt/shell/emulated
+    export EMULATED_STORAGE_TARGET /storage/emulated
+
+    # Support legacy paths
+    symlink /storage/emulated/legacy /sdcard
+    symlink /storage/emulated/legacy /mnt/sdcard
+    symlink /storage/emulated/legacy /storage/sdcard0
+    symlink /mnt/shell/emulated/0 /storage/emulated/legacy
+    
+    mkdir /tmp 0777 system system
+    mount tmpfs tmpfs /tmp/ mode=0777,gid=1000
+    mkdir /var 0777 system system
+    mount tmpfs tmpfs /var/ mode=0777,gid=1000
+
+    # netaccess 
+    mkdir /var/run/ 0777 system system
+    mkdir /var/ppp/ 0777 system system
+    
+    mkdir /mnt/media_rw/usb1 0777 media_rw media_rw
+    mkdir /mnt/media_rw/usb2 0777 media_rw media_rw
+    mkdir /mnt/media_rw/usb3 0777 media_rw media_rw
+    mkdir /mnt/media_rw/sdcard1 0777 media_rw media_rw
+	
+    mkdir /storage/usb1 0777 root root 
+    mkdir /storage/usb2 0777 root root
+    mkdir /storage/usb3 0777 root root
+    mkdir /storage/sdcard1 0777 root root
+    
+on fs
+    mount_all /fstab.zx296702
+    setprop ro.crypto.fuse_sdcard true
+
+
+# eth0
+service dhcpcd_eth0 /system/bin/dhcpcd -ABKL
+    class main
+    disabled
+    oneshot
+    
+# IP Renew
+# eth0 
+service iprenew_eth0 /system/bin/dhcpcd -n
+    class main
+    disabled
+    oneshot
+
+service cleareth0 /system/bin/sh /system/etc/eth_off.sh
+    class main    
+    disabled
+    oneshot
+
+service ethernet /system/bin/sh /system/etc/eth0.sh
+    class late_start
+    oneshot
+
+on property:sys.kernel_animation_quit=true
+    write /proc/logo/free_fb_cmd 1
+
+service fuse_usb1 /system/bin/sdcard -u 1023 -g 1023 -w 1023 -d /mnt/media_rw/usb1 /storage/usb1  
+    class late_start
+    disabled  
+
+service fuse_usb2 /system/bin/sdcard -u 1023 -g 1023 -w 1023 -d /mnt/media_rw/usb2 /storage/usb2  
+    class late_start
+    disabled  
+
+service fuse_usb3 /system/bin/sdcard -u 1023 -g 1023 -w 1023 -d /mnt/media_rw/usb3 /storage/usb3  
+    class late_start
+    disabled  
+
+service fuse_sdcard1 /system/bin/sdcard -u 1023 -g 1023 -w 1023 -d /mnt/media_rw/sdcard1 /storage/sdcard1  
+    class late_start
+    disabled  
+
+service sdcard /system/bin/sdcard -u 1023 -g 1023 -l /data/media /mnt/shell/emulated
+    class late_start
+
+import /zte_init.rc

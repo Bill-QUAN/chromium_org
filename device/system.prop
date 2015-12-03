@@ -1,0 +1,24 @@
+#
+# system.prop for zx296702
+#
+
+# settings
+ro.screen.has.brightness=false
+ro.screen.has.tvout=true
+ro.screen.has.timeout=false
+
+hw.nobattery=true
+hw.nolocation=true
+hw.nophone=true
+hw.has.accelerometer=false
+
+# disable strictmode
+persist.sys.strictmode.disable=true
+
+# dalvik heap
+dalvik.vm.heapstartsize=16m
+dalvik.vm.heapgrowthlimit=192m
+dalvik.vm.heapsize=512m
+
+# disable lockscreen
+ro.lockscreen.disable.default=true

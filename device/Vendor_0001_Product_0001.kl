@@ -1,0 +1,64 @@
+# basic function for remote control
+#
+
+key 177    F1
+key 176    F2
+key 175    F3
+key 174    F4
+
+key 184    DPAD_UP
+key 183    DPAD_LEFT
+key 182    DPAD_CENTER
+key 181    DPAD_RIGHT
+key 180    DPAD_DOWN
+
+key 188    MEDIA_REWIND
+key 185    MEDIA_FAST_FORWARD
+key 187    MEDIA_PLAY_PAUSE
+key 186    MEDIA_STOP
+
+key 233    DEL
+
+key 244    CHANNEL_UP
+# From langchao by liukeyang SVN 4329
+key 234    CHANNEL_DOWN
+
+key 243    VOLUME_UP
+key 237	   VOLUME_MUTE
+key 231    VOLUME_DOWN
+
+key 242    PAGE_UP
+key 236    PAGE_DOWN
+
+key 255     0
+key 254     1
+key 253     2
+key 252     3
+key 251     4
+key 250     5
+key 249     6
+key 248     7
+key 247     8
+key 246     9
+
+key 169    APP_SWITCH
+key 179    BACK
+key 178    MENU
+key 191    POWER
+key 225    INFO
+key 226    SETTINGS
+#key 227    SOUNDCHANNEL
+#key 238    MOUSE
+key 245    STB_INPUT
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,17 @@
+#mali
+/dev/mali                 0666   system     system        
+/dev/ion                  0666   system     system      
+/dev/ump                  0666   system     graphics
+
+#vou
+/dev/video0               0666   system     camera        
+/dev/video10              0666   system     system        
+/dev/video13              0666   system     system        
+/dev/video14              0666   system     system        
+/dev/graphics/fb0         0666   system     system
+/dev/graphics/fb1         0666   system     system
+/dev/graphics/fb2         0666   system     system
+/dev/hdmihpd              0666   system     system
+
+#conf
+/dev/block/conf           0666   root       root
