@@ -1,0 +1,340 @@
+Index: Android.mk
+===================================================================
+--- Android.mk	(revision 54288)
++++ Android.mk	(working copy)
+@@ -29,10 +29,14 @@
+ 
+ LOCAL_MODULE := libz
+ LOCAL_MODULE_TAGS := optional
+-LOCAL_CFLAGS += -O3 -DUSE_MMAP
++LOCAL_CFLAGS += -O2 -DUSE_MMAP
+ LOCAL_SRC_FILES := $(zlib_files)
+ ifeq ($(TARGET_ARCH),arm)
+   LOCAL_SDK_VERSION := 9
++  LOCAL_CFLAGS += -DTARGET_ARCH_ARM
++  LOCAL_C_INCLUDES += system/core/include/
++  LOCAL_SHARED_LIBRARIES := \
++                          libcutils 
+ endif
+ include $(BUILD_SHARED_LIBRARY)
+ 
+@@ -41,10 +45,14 @@
+ LOCAL_ARM_MODE := arm
+ LOCAL_MODULE := libz
+ LOCAL_MODULE_TAGS := optional
+-LOCAL_CFLAGS += -O3 -DUSE_MMAP
++LOCAL_CFLAGS += -O2 -DUSE_MMAP
+ LOCAL_SRC_FILES := $(zlib_files)
+ ifeq ($(TARGET_ARCH),arm)
+   LOCAL_SDK_VERSION := 9
++  LOCAL_C_INCLUDES += system/core/include/
++  LOCAL_CFLAGS += -DTARGET_ARCH_ARM
++  LOCAL_SHARED_LIBRARIES := \
++                          libcutils 
+ endif
+ include $(BUILD_STATIC_LIBRARY)
+ 
+@@ -53,7 +61,7 @@
+ LOCAL_ARM_MODE := arm
+ LOCAL_MODULE := libz
+ LOCAL_MODULE_TAGS := optional
+-LOCAL_CFLAGS += -O3 -DUSE_MMAP
++LOCAL_CFLAGS += -O2 -DUSE_MMAP
+ LOCAL_SRC_FILES := $(zlib_files)
+ include $(BUILD_HOST_STATIC_LIBRARY)
+ 
+@@ -63,7 +71,7 @@
+ LOCAL_ARM_MODE := arm
+ LOCAL_MODULE := libz-host
+ LOCAL_MODULE_TAGS := optional
+-LOCAL_CFLAGS += -O3 -DUSE_MMAP
++LOCAL_CFLAGS += -O2 -DUSE_MMAP
+ LOCAL_SRC_FILES := $(zlib_files)
+ include $(BUILD_HOST_SHARED_LIBRARY)
+ 
+Index: src/inffast.c
+===================================================================
+--- src/inffast.c	(revision 54288)
++++ src/inffast.c	(working copy)
+@@ -8,6 +8,7 @@
+ #include "inflate.h"
+ #include "inffast.h"
+ 
++
+ #ifndef ASMINF
+ 
+ /* Allow machine dependent optimization for post-increment or pre-increment.
+@@ -21,6 +22,134 @@
+    - Pentium III (Anderson)
+    - M68060 (Nikl)
+  */
++#ifdef TARGET_ARCH_ARM
++#define POSTINC
++#define LOG_TAG     "zlib"
++#include <cutils/log.h>
++#define MEM_OPT 
++static void  __attribute__((noinline)) small_copy(void *dst, void *src, int len)  
++{
++    int addr_diff;
++
++    addr_diff = (unsigned)dst - (unsigned)src;
++
++    if (addr_diff >= 4 && addr_diff < 64) {
++        asm volatile (
++            "cmp        %[len], #4                  \n"
++            "blt        1f                          \n"
++            "sub        %[len], %[len], #4          \n"
++        "2:                                         \n"
++            "ldr        r12, [%[src]], #4           \n"
++            "subs       %[len], %[len], #4          \n"
++            "str        r12, [%[dst]], #4           \n"
++            "bge        2b                          \n"
++            "adds       %[len], %[len], #4          \n"
++            "beq        20f                         \n"
++        "1:                                         \n"
++            "tst        %[len], #2                  \n"
++            "ldrneh     r12, [%[src]], #2           \n"
++            "strneh     r12, [%[dst]], #2           \n"
++            "tst        %[len], #1                  \n"
++            "ldrneb     r12, [%[src]], #1           \n"
++            "strneb     r12, [%[dst]], #1           \n"
++        "20:                                        \n"
++            :
++            : [src] "r" (src), [dst] "r" (dst), [len] "r" (len)
++            : "memory", "cc", "r12"
++        );
++        return ;
++    }
++    switch(addr_diff) {
++    case 0:
++        return;
++
++    case 1:
++        memset(dst, *((unsigned char *)src), len);    
++        return;
++
++    case 2:
++        /*
++         * like memset16
++         */
++        asm volatile (
++            "ldrh       r12, [%[src]]               \n"
++            "cmp        %[len], #4                  \n"
++            "blt        1f                          \n"
++            "sub        %[len], %[len], #4          \n"
++            "orr        r12, r12, r12, lsl #16      \n"
++        "2:                                         \n"
++            "subs       %[len], %[len], #4          \n"
++            "str        r12, [%[dst]], #4           \n"
++            "bge        2b                          \n"
++            "adds       %[len], %[len], #4          \n"
++            "beq        20f                         \n"
++        "1:                                         \n"
++            "tst        %[len], #2                  \n"
++            "strneh     r12, [%[dst]], #2           \n"
++            "tst        %[len], #1                  \n"
++            "strneb     r12, [%[dst]], #1           \n"
++        "20:                                        \n"
++            :
++            : [src] "r" (src), [dst] "r" (dst), [len] "r" (len)
++            : "memory", "cc", "r12"
++        );
++        break;
++
++    case 3:
++        // This branch seldom happen, usually len ls small
++        asm volatile (
++            "ldr        r12, [%[src]]               \n"
++            "cmp        %[len], #4                  \n"
++            "blt        1f                          \n"
++        "2:                                         \n"
++            "sub        %[len], %[len], #3          \n"
++            "str        r12, [%[dst]], #3           \n"
++            "cmp        %[len], #4                  \n"
++            "bge        2b                          \n"
++        "1:                                         \n"
++            "tst        %[len], #2                  \n"
++            "strneh     r12, [%[dst]], #2           \n"
++            "lsrne      r12, r12, #16               \n"
++            "tst        %[len], #1                  \n"
++            "strneb     r12, [%[dst]], #1           \n"
++        "20:                                        \n"
++            :
++            : [src] "r" (src), [dst] "r" (dst), [len] "r" (len)
++            : "memory", "cc", "r12"
++        );
++        return;
++    case 4:
++        asm volatile (
++            "ldr        r12, [%[src]]               \n"
++            "cmp        %[len], #4                  \n"
++            "blt        1f                          \n"
++            "sub        %[len], %[len], #4          \n"
++        "2:                                         \n"
++            "subs       %[len], %[len], #4          \n"
++            "str        r12, [%[dst]], #4           \n"
++            "bge        2b                          \n"
++            "adds       %[len], %[len], #4          \n"
++            "beq        20f                         \n"
++        "1:                                         \n"
++            "tst        %[len], #2                  \n"
++            "strneh     r12, [%[dst]], #2           \n"
++            "tst        %[len], #1                  \n"
++            "strneb     r12, [%[dst]], #1           \n"
++        "20:                                        \n"
++            :
++            : [src] "r" (src), [dst] "r" (dst), [len] "r" (len)
++            : "memory", "cc", "r12"
++        );
++        break;
++
++    default:
++        memcpy(dst, src, len);
++        break;
++    }
++    return ;
++}
++#endif
++
+ #ifdef POSTINC
+ #  define OFF 0
+ #  define PUP(a) *(a)++
+@@ -195,20 +324,39 @@
+                         }
+ #ifdef INFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR
+                         if (len <= op - whave) {
++                        #ifdef MEM_OPT
++                            memset(out, 0, len);
++                            out += len;
++                            len  = 0;
++                        #else
+                             do {
+                                 PUP(out) = 0;
+                             } while (--len);
++                        #endif
+                             continue;
+                         }
+                         len -= op - whave;
++                    #ifdef MEM_OPT
++                        memset(out, 0, op - whave);
++                        out += (op - whave);
++                        op   = whave;
++                    #else
+                         do {
+                             PUP(out) = 0;
+                         } while (--op > whave);
++                    #endif
+                         if (op == 0) {
+                             from = out - dist;
++                        #ifdef MEM_OPT
++                            small_copy(out, from, len);
++                            out  += len;
++                            from += len;
++                            len   = 0;
++                        #else
+                             do {
+                                 PUP(out) = PUP(from);
+                             } while (--len);
++                        #endif
+                             continue;
+                         }
+ #endif
+@@ -218,9 +366,16 @@
+                         from += wsize - op;
+                         if (op < len) {         /* some from window */
+                             len -= op;
++                        #ifdef MEM_OPT
++                            small_copy(out, from, op);
++                            out  += op;
++                            from += op;
++                            op = 0;
++                        #else
+                             do {
+                                 PUP(out) = PUP(from);
+                             } while (--op);
++                        #endif
+                             from = out - dist;  /* rest from output */
+                         }
+                     }
+@@ -229,16 +384,30 @@
+                         op -= wnext;
+                         if (op < len) {         /* some from end of window */
+                             len -= op;
++                        #ifdef MEM_OPT
++                            small_copy(out, from, op);
++                            out  += op;
++                            from += op;
++                            op = 0;
++                        #else
+                             do {
+                                 PUP(out) = PUP(from);
+                             } while (--op);
++                        #endif
+                             from = window - OFF;
+                             if (wnext < len) {  /* some from start of window */
+                                 op = wnext;
+                                 len -= op;
++                            #ifdef MEM_OPT
++                                small_copy(out, from, op);
++                                out  += op;
++                                from += op;
++                                op = 0;
++                            #else
+                                 do {
+                                     PUP(out) = PUP(from);
+                                 } while (--op);
++                            #endif
+                                 from = out - dist;      /* rest from output */
+                             }
+                         }
+@@ -247,12 +416,25 @@
+                         from += wnext - op;
+                         if (op < len) {         /* some from window */
+                             len -= op;
++                        #ifdef MEM_OPT
++                            small_copy(out, from, op);
++                            out  += op;
++                            from += op;
++                            op = 0;
++                        #else
+                             do {
+                                 PUP(out) = PUP(from);
+                             } while (--op);
++                        #endif
+                             from = out - dist;  /* rest from output */
+                         }
+                     }
++                #ifdef MEM_OPT
++                    small_copy(out, from, len);
++                    out  += len;
++                    from += len;
++                    len   = (len % 3);
++                #else
+                     while (len > 2) {
+                         PUP(out) = PUP(from);
+                         PUP(out) = PUP(from);
+@@ -264,9 +446,16 @@
+                         if (len > 1)
+                             PUP(out) = PUP(from);
+                     }
++                #endif
+                 }
+                 else {
+                     from = out - dist;          /* copy direct from output */
++                #ifdef MEM_OPT 
++                    small_copy(out, from, len);
++                    out  += len;
++                    from += len;
++                    len   = (len % 3);
++                #else
+                     do {                        /* minimum length is three */
+                         PUP(out) = PUP(from);
+                         PUP(out) = PUP(from);
+@@ -278,6 +467,7 @@
+                         if (len > 1)
+                             PUP(out) = PUP(from);
+                     }
++                #endif
+                 }
+             }
+             else if ((op & 64) == 0) {          /* 2nd level distance code */

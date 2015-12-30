@@ -1,0 +1,1571 @@
+Index: libc/string/strcat.c
+===================================================================
+--- libc/string/strcat.c	(revision 55656)
++++ libc/string/strcat.c	(working copy)
+@@ -45,7 +45,13 @@
+ {
+ 	char *save = s;
+ 
+-	for (; *s; ++s);
+-	while ((*s++ = *append++) != '\0');
+-	return(save);
++#if 0
++    for (; *s; ++s);
++    while ((*s++ = *append++) != '\0');
++    return(save);
++#else
++    s += strlen(s);
++    strcpy(s, append);
++    return save;
++#endif
+ }
+Index: libc/string/bcopy.c
+===================================================================
+--- libc/string/bcopy.c	(revision 55656)
++++ libc/string/bcopy.c	(working copy)
+@@ -74,6 +74,7 @@
+ #define	TLOOP1(s) do { s; } while (--t)
+ 
+ 	if ((unsigned long)dst < (unsigned long)src) {
++    #if 0
+ 		/*
+ 		 * Copy forward.
+ 		 */
+@@ -97,7 +98,11 @@
+ 		TLOOP(*(word *)dst = *(word *)src; src += wsize; dst += wsize);
+ 		t = length & wmask;
+ 		TLOOP(*dst++ = *src++);
++    #else
++        memcpy(dst, src, length);
++    #endif
+ 	} else {
++    #if 0
+ 		/*
+ 		 * Copy backwards.  Otherwise essentially the same.
+ 		 * Alignment works as before, except that it takes
+@@ -118,6 +123,168 @@
+ 		TLOOP(src -= wsize; dst -= wsize; *(word *)dst = *(word *)src);
+ 		t = length & wmask;
+ 		TLOOP(*--dst = *--src);
++    #else
++        src += length;
++        dst += length;
++        if (!(((unsigned long)dst ^ (unsigned long)src) & 0x03)) {
++            // can be aligned
++            asm volatile (
++                "pld        [%[src], #-64]                  \n"
++                "tst        %[src], #0x03                   \n"
++                "beq        .Lbbcopy_aligned                \n"
++
++            ".Lbbcopy_make_align:                           \n"
++                "ldrb       r12, [%[src], #-1]!             \n"
++                "subs       %[length], %[length], #1        \n"
++                "strb       r12, [%[dst], #-1]!             \n"
++                "beq        .Lbbcopy_out                    \n"
++                "tst        %[src], #0x03                   \n"
++                "bne        .Lbbcopy_make_align             \n"
++
++            ".Lbbcopy_aligned:                              \n"
++                "cmp        %[length], #64                  \n"
++                "blt        .Lbbcopy_align_less_64          \n"
++            ".Lbbcopy_align_loop64:                         \n"
++                "vldmdb     %[src]!, {q0 - q3}              \n"
++                "sub        %[length], %[length], #64       \n"
++                "cmp        %[length], #64                  \n"
++                "pld        [%[src], #-64]                  \n"
++                "pld        [%[src], #-96]                  \n"
++                "vstmdb     %[dst]!, {q0 - q3}              \n"
++                "bge        .Lbbcopy_align_loop64           \n"
++                "cmp        %[length], #0                   \n"
++                "beq        .Lbbcopy_out                    \n"
++
++            ".Lbbcopy_align_less_64:                        \n"
++                "cmp        %[length], #32                  \n"
++                "blt        .Lbbcopy_align_less_32          \n"
++                "vldmdb     %[src]!, {q0 - q1}              \n"
++                "subs       %[length], %[length], #32       \n"
++                "vstmdb     %[dst]!, {q0 - q1}              \n"
++                "beq        .Lbbcopy_out                    \n"
++
++            ".Lbbcopy_align_less_32:                        \n"
++                "cmp        %[length], #16                  \n"
++                "blt        .Lbbcopy_align_less_16          \n"
++                "vldmdb     %[src]!, {q0}                   \n"
++                "subs       %[length], %[length], #16       \n"
++                "vstmdb     %[dst]!, {q0}                   \n"
++                "beq        .Lbbcopy_out                    \n"
++
++            ".Lbbcopy_align_less_16:                        \n"
++                "cmp        %[length], #8                   \n"
++                "blt        .Lbbcopy_align_less_8           \n"
++                "vldmdb     %[src]!, {d0}                   \n"
++                "subs       %[length], %[length], #8        \n"
++                "vstmdb     %[dst]!, {d0}                   \n"
++                "beq        .Lbbcopy_out                    \n"
++
++            ".Lbbcopy_align_less_8:                         \n"
++                "cmp        %[length], #4                   \n"
++                "blt        .Lbbcopy_align_less_4           \n"
++                "ldr        r12, [%[src], #-4]!             \n"
++                "subs       %[length], %[length], #4        \n"
++                "str        r12, [%[dst], #-4]!             \n"
++                "beq        .Lbbcopy_out                    \n"
++
++            ".Lbbcopy_align_less_4:                         \n"
++                "cmp        %[length], #2                   \n"
++                "blt        .Lbbcopy_align_less_2           \n"
++                "ldrh       r12, [%[src], #-2]!             \n"
++                "subs       %[length], %[length], #2        \n"
++                "strh       r12, [%[dst], #-2]!             \n"
++                "beq        .Lbbcopy_out                    \n"
++
++            ".Lbbcopy_align_less_2:                         \n"
++                "ldrb       r12, [%[src], #-1]!             \n"
++                "strb       r12, [%[dst], #-1]!             \n"
++
++            ".Lbbcopy_out:                                  \n"
++                :
++                : [src] "r" (src), [dst] "r" (dst), [length] "r" (length)
++                : "memory", "cc", "r12"
++            );
++        } else {
++            // can not be aligned
++            asm volatile (
++                "cmp        %[length], #64                  \n"
++                "pld        [%[src], #-32]                  \n"
++                "blt        .Lbbcopy___less_64              \n"
++                "mov        r12, #-32                       \n"
++                "sub        %[src], %[src], #32             \n"
++                "sub        %[dst], %[dst], #32             \n"
++            ".Lbbcopy___loop64:                             \n"
++                "vld1.8     {q0 - q1}, [%[src]], r12        \n"
++                "vld1.8     {q2 - q3}, [%[src]], r12        \n"
++                "sub        %[length], %[length], #64       \n"
++                "cmp        %[length], #64                  \n"
++                "pld        [%[src], #-64]                  \n"
++                "pld        [%[src], #-96]                  \n"
++                "vst1.8     {q0 - q1}, [%[dst]], r12        \n"
++                "vst1.8     {q2 - q3}, [%[dst]], r12        \n"
++                "bge        .Lbbcopy___loop64               \n"
++                "cmp        %[length], #0                   \n"
++                "beq        .Lbcopy_out                     \n"
++                "add        %[src], %[src], #32             \n"
++                "add        %[dst], %[dst], #32             \n"
++
++            ".Lbbcopy___less_64:                            \n"
++                "cmp        %[length], #32                  \n"
++                "blt        .Lbbcopy___less_32              \n"
++                "sub        %[src], %[src], #32             \n"
++                "sub        %[dst], %[dst], #32             \n"
++                "vld1.8     {q0 - q1}, [%[src]]             \n"
++                "subs       %[length], %[length], #32       \n"
++                "vst1.8     {q0 - q1}, [%[dst]]             \n"
++                "beq        .Lbcopy_out                     \n"
++
++            ".Lbbcopy___less_32:                            \n"
++                "cmp        %[length], #16                  \n"
++                "blt        .Lbbcopy___less_16              \n"
++                "sub        %[src], %[src], #16             \n"
++                "sub        %[dst], %[dst], #16             \n"
++                "vld1.8     {q0}, [%[src]]                  \n"
++                "subs       %[length], %[length], #16       \n"
++                "vst1.8     {q0}, [%[dst]]                  \n"
++                "beq        .Lbcopy_out                     \n"
++
++            ".Lbbcopy___less_16:                            \n"
++                "cmp        %[length], #8                   \n"
++                "blt        .Lbbcopy___less_8               \n"
++                "sub        %[src], %[src], #8              \n"
++                "sub        %[dst], %[dst], #8              \n"
++                "vld1.8     {d0}, [%[src]]                  \n"
++                "subs       %[length], %[length], #8        \n"
++                "vst1.8     {d0}, [%[dst]]                  \n"
++                "beq        .Lbcopy_out                     \n"
++
++            ".Lbbcopy___less_8:                             \n"
++                "cmp        %[length], #4                   \n"
++                "blt        .Lbbcopy___less_4               \n"
++                "ldr        r12, [%[src], #-4]!             \n"
++                "subs       %[length], %[length], #4        \n"
++                "str        r12, [%[dst], #-4]!             \n"
++                "beq        .Lbcopy_out                     \n"
++
++            ".Lbbcopy___less_4:                             \n"
++                "cmp        %[length], #2                   \n"
++                "blt        .Lbbcopy___less_2               \n"
++                "ldrh       r12, [%[src], #-2]!             \n"
++                "subs       %[length], %[length], #2        \n"
++                "strh       r12, [%[dst], #-2]!             \n"
++                "beq        .Lbcopy_out                     \n"
++
++            ".Lbbcopy___less_2:                             \n"
++                "ldrb       r12, [%[src], #-1]!             \n"
++                "strb       r12, [%[dst], #-1]!             \n"
++
++            ".Lbcopy_out:                                   \n"
++                :
++                : [src] "r" (src), [dst] "r" (dst), [length] "r" (length)
++                : "memory", "cc", "r12"
++            ); 
++        }
++    #endif
+ 	}
+ done:
+ #if defined(MEMCOPY) || defined(MEMMOVE)
+Index: libc/string/strncat.c
+===================================================================
+--- libc/string/strncat.c	(revision 55656)
++++ libc/string/strncat.c	(working copy)
+@@ -44,8 +44,12 @@
+ 		char *d = dst;
+ 		const char *s = src;
+ 
++    #if 0
+ 		while (*d != 0)
+ 			d++;
++    #else
++        d += strlen(d);
++    #endif
+ 		do {
+ 			if ((*d = *s++) == 0)
+ 				break;
+Index: libc/Android.mk
+===================================================================
+--- libc/Android.mk	(revision 55656)
++++ libc/Android.mk	(working copy)
+@@ -372,7 +372,7 @@
+ 	string/strncpy.c \
+ 	bionic/strchr.cpp \
+ 	string/strrchr.c \
+-	bionic/memchr.c \
++    arch-arm/bionic/memchr.S \
+ 	bionic/memrchr.c \
+ 	string/index.c \
+ 	bionic/strnlen.c \
+@@ -918,6 +918,7 @@
+ LOCAL_SHARED_LIBRARIES := libdl
+ LOCAL_WHOLE_STATIC_LIBRARIES := libc_common
+ LOCAL_SYSTEM_SHARED_LIBRARIES :=
++LOCAL_ARM_MODE := arm
+ 
+ include $(BUILD_SHARED_LIBRARY)
+ 
+@@ -954,6 +955,7 @@
+ LOCAL_WHOLE_STATIC_LIBRARIES := libc_common
+ LOCAL_SYSTEM_SHARED_LIBRARIES :=
+ LOCAL_ALLOW_UNDEFINED_SYMBOLS := true
++LOCAL_ARM_MODE := arm
+ 
+ # Don't install on release build
+ LOCAL_MODULE_TAGS := eng debug
+Index: libc/arch-arm/cortex-a9/bionic/memcpy_base.S
+===================================================================
+--- libc/arch-arm/cortex-a9/bionic/memcpy_base.S	(revision 55656)
++++ libc/arch-arm/cortex-a9/bionic/memcpy_base.S	(working copy)
+@@ -33,201 +33,113 @@
+  */
+ 
+ ENTRY(MEMCPY_BASE)
+-        .cfi_startproc
+         .save       {r0, lr}
+-        .cfi_def_cfa_offset 8
+-        .cfi_rel_offset r0, 0
+-        .cfi_rel_offset lr, 4
++        cmp         r2, #0
++        ble         1f 
++        pld         [r1]
++        mov         r12, r0                 // back up r0 
++        eor         r3, r1, r0
++        tst         r3, #0x03               // temp data
++        bne         use_neon                // src and dest cannot make align
++        tst         r1, #0x03
++        beq         aligned_cpy
+ 
+-        // Check so divider is at least 16 bytes, needed for alignment code.
+-        cmp         r2, #16
+-        blo         5f
++make_align:
++        ldrb        r3, [r1], #1
++        subs        r2,  r2,  #1
++        strb        r3, [r0], #1
++        beq         out
++        tst         r1, #0x03
++        bne         make_align
+ 
+-        /* check if buffers are aligned. If so, run arm-only version */
+-        eor         r3, r0, r1
+-        ands        r3, r3, #0x3
+-        beq         __memcpy_base_aligned
++aligned_cpy:
++        cmp         r2, #68
++        blt         less_64_nocheck
++        tst         r1, #0x04
++        beq         aligned_64
++        ldr         r3, [r1], #4
++        subs        r2, #4
++        str         r3, [r0], #4               // align to 8 bytes 
++        beq         out
++aligned_64:
++        subs        r2, #64
++        pld         [r1, #32]
++        blt         less_64
++        pld         [r1, #64]
++        pld         [r1, #96]
++        .align  3
++loop_main:
++        vldmia      r1!, {q0 - q3}              // 8
++        pld         [r1, #128]                  // 1
++        pld         [r1, #160]                  // 1
++        subs        r2,  #64                    // 1
++        vstmia      r0!, {q0 - q3}              // 8
++        bge         loop_main                   // 1  64 / 20 = 3.2 bytes/cycle
+ 
+-        /* Check the upper size limit for Neon unaligned memory access in memcpy */
+-        cmp         r2, #224
+-        blo         3f
++less_64:
++        adds        r2,  #64
++        beq         out
++less_64_nocheck:
++        cmp         r2,  #8 
++        blt         less_8
++loop_arm_8:
++        vldmia      r1!, {d0}
++        sub         r2,  #8
++        cmp         r2,  #8
++        vstmia      r0!, {d0}
++        bge         loop_arm_8
++less_8: 
++        tst         r2,  #4
++        itt         ne
++        ldrne       r3, [r1], #4
++        strne       r3, [r0], #4
++        tst         r2,  #2
++        itt         ne
++        ldrneh      r3, [r1], #2
++        strneh      r3, [r0], #2
++        tst         r2,  #1
++        itt         ne
++        ldrneb      r3, [r1], #1
++        strneb      r3, [r0], #1
++out:
++        mov         r0, r12 
++1:
++        pop         {r0, lr}
++        bx          lr
+ 
+-        /* align destination to 16 bytes for the write-buffer */
+-        rsb         r3, r0, #0
+-        ands        r3, r3, #0xF
+-        beq         3f
+-
+-        /* copy up to 15-bytes (count in r3) */
+-        sub         r2, r2, r3
+-        movs        ip, r3, lsl #31
+-        itt         mi
+-        ldrbmi      lr, [r1], #1
+-        strbmi      lr, [r0], #1
+-        itttt       cs
+-        ldrbcs      ip, [r1], #1
+-        ldrbcs      lr, [r1], #1
+-        strbcs      ip, [r0], #1
+-        strbcs      lr, [r0], #1
+-        movs        ip, r3, lsl #29
+-        bge         1f
+-        // copies 4 bytes, destination 32-bits aligned
+-        vld1.32     {d0[0]}, [r1]!
+-        vst1.32     {d0[0]}, [r0, :32]!
+-1:      bcc         2f
+-        // copies 8 bytes, destination 64-bits aligned
++use_neon:
++        cmp         r2, #64
++        blt         use_neon_less64
++use_neon_loop:
++        vld1.8      {q0, q1}, [r1]!
++        vld1.8      {q2, q3}, [r1]!
++        pld         [r1, #64]
++        pld         [r1, #96]
++        sub         r2, #64
++        cmp         r2, #64
++        vst1.8      {q0, q1}, [r0]!
++        vst1.8      {q2, q3}, [r0]!
++        bge         use_neon_loop
++use_neon_less64:
++        cmp         r2, #32
++        blt         use_neon_less32
++        vld1.8      {q0, q1}, [r1]!
++        subs        r2, #32
++        vst1.8      {q0, q1}, [r0]!
++        beq         out
++use_neon_less32:
++        cmp         r2, #16
++        blt         use_neon_less16
++        vld1.8      {q0}, [r1]!
++        subs        r2, #16
++        vst1.8      {q0}, [r0]!
++        beq         out 
++use_neon_less16:
++        cmp         r2, #8
++        blt         less_8
+         vld1.8      {d0}, [r1]!
+-        vst1.8      {d0}, [r0, :64]!
+-2:
+-        /* preload immediately the next cache line, which we may need */
+-        pld         [r1, #0]
+-        pld         [r1, #(32 * 2)]
+-3:
+-        /* make sure we have at least 64 bytes to copy */
+-        subs        r2, r2, #64
+-        blo         2f
+-
+-        /* preload all the cache lines we need */
+-        pld         [r1, #(32 * 4)]
+-        pld         [r1, #(32 * 6)]
+-
+-1:      /* The main loop copies 64 bytes at a time */
+-        vld1.8      {d0 - d3}, [r1]!
+-        vld1.8      {d4 - d7}, [r1]!
+-        pld         [r1, #(32 * 6)]
+-        subs        r2, r2, #64
+-        vst1.8      {d0 - d3}, [r0]!
+-        vst1.8      {d4 - d7}, [r0]!
+-        bhs         1b
+-
+-2:      /* fix-up the remaining count and make sure we have >= 32 bytes left */
+-        add         r2, r2, #64
+-        subs        r2, r2, #32
+-        blo         4f
+-
+-3:      /* 32 bytes at a time. These cache lines were already preloaded */
+-        vld1.8      {d0 - d3}, [r1]!
+-        subs        r2, r2, #32
+-        vst1.8      {d0 - d3}, [r0]!
+-        bhs         3b
+-
+-4:      /* less than 32 left */
+-        add         r2, r2, #32
+-        tst         r2, #0x10
+-        beq         5f
+-        // copies 16 bytes, 128-bits aligned
+-        vld1.8      {d0, d1}, [r1]!
+-        vst1.8      {d0, d1}, [r0]!
+-5:      /* copy up to 15-bytes (count in r2) */
+-        movs        ip, r2, lsl #29
+-        bcc         1f
+-        vld1.8      {d0}, [r1]!
++        subs        r2, #8
+         vst1.8      {d0}, [r0]!
+-1:      bge         2f
+-        vld1.32     {d0[0]}, [r1]!
+-        vst1.32     {d0[0]}, [r0]!
+-2:      movs        ip, r2, lsl #31
+-        itt         mi
+-        ldrbmi      r3, [r1], #1
+-        strbmi      r3, [r0], #1
+-        itttt       cs
+-        ldrbcs      ip, [r1], #1
+-        ldrbcs      lr, [r1], #1
+-        strbcs      ip, [r0], #1
+-        strbcs      lr, [r0], #1
+-
+-        ldmfd       sp!, {r0, lr}
+-        bx          lr
+-
+-        .cfi_endproc
++        beq         out 
++        b           less_8
+ END(MEMCPY_BASE)
+-
+-ENTRY(MEMCPY_BASE_ALIGNED)
+-        .cfi_startproc
+-
+-        .save       {r0, lr}
+-        .cfi_def_cfa_offset 8
+-        .cfi_rel_offset r0, 0
+-        .cfi_rel_offset lr, 4
+-
+-        /* Simple arm-only copy loop to handle aligned copy operations */
+-        stmfd       sp!, {r4-r8}
+-        .save       {r4-r8}
+-        .cfi_adjust_cfa_offset 20
+-        .cfi_rel_offset r4, 0
+-        .cfi_rel_offset r5, 4
+-        .cfi_rel_offset r6, 8
+-        .cfi_rel_offset r7, 12
+-        .cfi_rel_offset r8, 16
+-        pld         [r1, #(32 * 4)]
+-
+-        /* Check alignment */
+-        rsb         r3, r1, #0
+-        ands        r3, #3
+-        beq         2f
+-
+-        /* align source to 32 bits. We need to insert 2 instructions between
+-         * a ldr[b|h] and str[b|h] because byte and half-word instructions
+-         * stall 2 cycles.
+-         */
+-        movs        r12, r3, lsl #31
+-        sub         r2, r2, r3      /* we know that r3 <= r2 because r2 >= 4 */
+-        itt         mi
+-        ldrbmi      r3, [r1], #1
+-        strbmi      r3, [r0], #1
+-        itttt       cs
+-        ldrbcs      r4, [r1], #1
+-        ldrbcs      r5, [r1], #1
+-        strbcs      r4, [r0], #1
+-        strbcs      r5, [r0], #1
+-
+-2:
+-        subs        r2, r2, #64
+-        blt         4f
+-
+-3:      /* Main copy loop, copying 64 bytes at a time */
+-        pld         [r1, #(32 * 8)]
+-        ldmia       r1!, {r3, r4, r5, r6, r7, r8, r12, lr}
+-        stmia       r0!, {r3, r4, r5, r6, r7, r8, r12, lr}
+-        ldmia       r1!, {r3, r4, r5, r6, r7, r8, r12, lr}
+-        stmia       r0!, {r3, r4, r5, r6, r7, r8, r12, lr}
+-        subs        r2, r2, #64
+-        bge         3b
+-
+-4:      /* Check if there are > 32 bytes left */
+-        adds        r2, r2, #64
+-        subs        r2, r2, #32
+-        blt         5f
+-
+-        /* Copy 32 bytes */
+-        ldmia       r1!, {r3, r4, r5, r6, r7, r8, r12, lr}
+-        stmia       r0!, {r3, r4, r5, r6, r7, r8, r12, lr}
+-        subs        r2, #32
+-
+-5:      /* Handle any remaining bytes */
+-        adds        r2, #32
+-        beq         6f
+-
+-        movs        r12, r2, lsl #28
+-        itt         cs
+-        ldmiacs     r1!, {r3, r4, r5, r6}   /* 16 bytes */
+-        stmiacs     r0!, {r3, r4, r5, r6}
+-        itt         mi
+-        ldmiami     r1!, {r7, r8}           /*  8 bytes */
+-        stmiami     r0!, {r7, r8}
+-        movs        r12, r2, lsl #30
+-        itt         cs
+-        ldrcs       r3, [r1], #4            /*  4 bytes */
+-        strcs       r3, [r0], #4
+-        itt         mi
+-        ldrhmi      r4, [r1], #2            /*  2 bytes */
+-        strhmi      r4, [r0], #2
+-        tst         r2, #0x1
+-        itt         ne
+-        ldrbne      r3, [r1]                /*  last byte  */
+-        strbne      r3, [r0]
+-6:
+-        ldmfd       sp!, {r4-r8}
+-        ldmfd       sp!, {r0, pc}
+-
+-        .cfi_endproc
+-END(MEMCPY_BASE_ALIGNED)
+Index: libc/arch-arm/cortex-a9/bionic/strcpy.S
+===================================================================
+--- libc/arch-arm/cortex-a9/bionic/strcpy.S	(revision 55656)
++++ libc/arch-arm/cortex-a9/bionic/strcpy.S	(working copy)
+@@ -51,406 +51,193 @@
+  * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * Android adaptation and tweak by Jim Huang <jserv@0xlab.org>.
+  */
+ 
++#include <machine/cpu-features.h>
+ #include <machine/asm.h>
+ 
+-    .syntax unified
++#if 0
++ENTRY(strcpy)
++	PLD(r1, #0)
++	eor	r2, r0, r1
++	mov	ip, r0
++	tst	r2, #3
++	bne	4f
++	tst	r1, #3
++	bne	3f
++5:
++	str	r5, [sp, #-4]!
++	mov	r5, #0x01
++	orr	r5, r5, r5, lsl #8
++	orr	r5, r5, r5, lsl #16
+ 
+-    .thumb
+-    .thumb_func
++	str	r4, [sp, #-4]!
++	tst	r1, #4
++	ldr	r3, [r1], #4
++	beq	2f
++	sub	r2, r3, r5
++	bics	r2, r2, r3
++	tst	r2, r5, lsl #7
++	itt	eq
++	streq	r3, [ip], #4
++	ldreq	r3, [r1], #4
++	bne	1f
++       /* Inner loop.  We now know that r1 is 64-bit aligned, so we
++	  can safely fetch up to two words.  This allows us to avoid
++	  load stalls.  */
++	.p2align 2
++2:
++	PLD(r1, #8)
++	ldr	r4, [r1], #4
++	sub	r2, r3, r5
++	bics	r2, r2, r3
++	tst	r2, r5, lsl #7
++	sub	r2, r4, r5
++	bne	1f
++	str	r3, [ip], #4
++	bics	r2, r2, r4
++	tst	r2, r5, lsl #7
++	itt	eq
++	ldreq	r3, [r1], #4
++	streq	r4, [ip], #4
++	beq	2b
++	mov	r3, r4
++1:
++#ifdef __ARMEB__
++	rors	r3, r3, #24
++#endif
++	strb	r3, [ip], #1
++	tst	r3, #0xff
++#ifdef __ARMEL__
++	ror	r3, r3, #8
++#endif
++	bne	1b
++	ldr	r4, [sp], #4
++	ldr	r5, [sp], #4
++	bx	lr
+ 
+-    .macro m_push
+-    push    {r0, r4, r5, lr}
+-    .endm // m_push
++       /* Strings have the same offset from word alignment, but it's
++	  not zero.  */
++3:
++	tst	r1, #1
++	beq	1f
++	ldrb	r2, [r1], #1
++	strb	r2, [ip], #1
++	cmp	r2, #0
++	it	eq
++	bxeq	lr
++1:
++	tst	r1, #2
++	beq	5b
++	ldrh	r2, [r1], #2
++#ifdef __ARMEB__
++	tst	r2, #0xff00
++	iteet	ne
++	strneh	r2, [ip], #2
++	lsreq	r2, r2, #8
++	streqb	r2, [ip]
++	tstne	r2, #0xff
++#else
++	tst	r2, #0xff
++	itet	ne
++	strneh	r2, [ip], #2
++	streqb	r2, [ip]
++	tstne	r2, #0xff00
++#endif
++	bne	5b
++	bx	lr
+ 
+-    .macro m_ret inst
+-    \inst   {r0, r4, r5, pc}
+-    .endm // m_ret
++       /* src and dst do not have a common word-alignement.  Fall back to
++	  byte copying.  */
++4:
++	ldrb	r2, [r1], #1
++	strb	r2, [ip], #1
++	cmp	r2, #0
++	bne	4b
++	bx	lr
++END(strcpy)
+ 
+-    .macro m_copy_byte reg, cmd, label
+-    ldrb    \reg, [r1], #1
+-    strb    \reg, [r0], #1
+-    \cmd    \reg, \label
+-    .endm // m_copy_byte
++#else
+ 
+ ENTRY(strcpy)
+-    // Unroll the first 8 bytes that will be copied.
+-    m_push
+-    m_copy_byte reg=r2, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r3, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r4, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r5, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r2, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r3, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r4, cmd=cbz, label=strcpy_finish
+-    m_copy_byte reg=r5, cmd=cbnz, label=strcpy_continue
++    /* char*  strcpy(char *, const char *); */
++strcpy_t:
++    pld         [r1]
++    eor         r12, r0, r1
++    tst         r12, #0x03
++    mov         r12, r0
++    bne         .Lstrcpy_nalign
++    tst         r1,  #0x03
++    beq         .Lstrcpy_align
+ 
+-strcpy_finish:
+-    m_ret   inst=pop
++.Lstrcpy_make_align:
++    ldrb        r3, [r1], #1
++    strb        r3, [r12], #1
++    cmp         r3, #0
++    bxeq        lr
++    tst         r1, #0x03
++    bne         .Lstrcpy_make_align
+ 
+-strcpy_continue:
+-    pld     [r1, #0]
+-    ands    r3, r0, #7
+-    bne     strcpy_align_dst
++.Lstrcpy_align:
++    push        {r4, r5, r6, lr}
++    mov         r4, #0
++    mvn         r5, #0
++.Lstrcpy_align_loop:
++    ldmia       r1!, {r2, r3}
++    pld         [r1, #8]
++    uadd8       r6, r2, r5
++    sel         r6, r4, r5
++    uadd8       lr, r3, r5
++    sel         lr, r6, r5
++    cmp         lr, #0
++    bne         .Lstrcpy_align_out
++    stmia       r12!, {r2, r3}
++    b           .Lstrcpy_align_loop
++.Lstrcpy_align_out:
++    cmp         r6, #0
++    streq       r2, [r12], #4
++    movne       r3, r2
++    movne       lr, r6
++.Lstrcpy_final_loop:
++    tst         lr, #0xff
++    strb        r3, [r12], #1
++    lsr         lr, lr, #8
++    lsr         r3, r3, #8
++    beq         .Lstrcpy_final_loop
++    pop         {r4, r5, r6, pc}
+ 
+-strcpy_check_src_align:
+-    // At this point dst is aligned to a double word, check if src
+-    // is also aligned to a double word.
+-    ands    r3, r1, #7
+-    bne     strcpy_unaligned_copy
++.Lstrcpy_nalign:
++    push        {r4, r5, r6, lr}
++    mov         r4, #0
++    mvn         r5, #0
++.Lstrcpy_nalign_loop:
++    ldr         r2, [r1], #4
++    ldr         r3, [r1], #4
++    pld         [r1, #8]
++    uadd8       r6, r2, r5
++    sel         r6, r4, r5
++    uadd8       lr, r3, r5
++    sel         lr, r6, r5
++    cmp         lr, #0
++    bne         .Lstrcpy_nalign_out
++    str         r2, [r12], #4
++    str         r3, [r12], #4
++    b           .Lstrcpy_nalign_loop
++.Lstrcpy_nalign_out:
++    cmp         r6, #0
++    streq       r2, [r12], #4
++    movne       r3, r2
++    movne       lr, r6
++.Lstrcpy_nfinal_loop:
++    tst         lr, #0xff
++    strb        r3, [r12], #1
++    lsr         lr, lr, #8
++    lsr         r3, r3, #8
++    beq         .Lstrcpy_nfinal_loop
++    pop         {r4, r5, r6, pc}
+ 
+-    .p2align 2
+-strcpy_mainloop:
+-    ldmia   r1!, {r2, r3}
+-
+-    pld     [r1, #64]
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-
+-    sub     ip, r3, #0x01010101
+-    bic     ip, ip, r3
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_second_register
+-
+-    stmia   r0!, {r2, r3}
+-    b       strcpy_mainloop
+-
+-strcpy_zero_in_first_register:
+-    lsls    lr, ip, #17
+-    itt     ne
+-    strbne  r2, [r0]
+-    m_ret   inst=popne
+-    itt     cs
+-    strhcs  r2, [r0]
+-    m_ret   inst=popcs
+-    lsls    ip, ip, #1
+-    itt     eq
+-    streq   r2, [r0]
+-    m_ret   inst=popeq
+-    strh    r2, [r0], #2
+-    lsr     r3, r2, #16
+-    strb    r3, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_zero_in_second_register:
+-    lsls    lr, ip, #17
+-    ittt    ne
+-    stmiane r0!, {r2}
+-    strbne  r3, [r0]
+-    m_ret   inst=popne
+-    ittt    cs
+-    strcs   r2, [r0], #4
+-    strhcs  r3, [r0]
+-    m_ret   inst=popcs
+-    lsls    ip, ip, #1
+-    itt     eq
+-    stmiaeq r0, {r2, r3}
+-    m_ret   inst=popeq
+-    stmia   r0!, {r2}
+-    strh    r3, [r0], #2
+-    lsr     r4, r3, #16
+-    strb    r4, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_align_dst:
+-    // Align to a double word (64 bits).
+-    rsb     r3, r3, #8
+-    lsls    ip, r3, #31
+-    beq     strcpy_align_to_32
+-
+-    ldrb    r2, [r1], #1
+-    strb    r2, [r0], #1
+-    cbz     r2, strcpy_complete
+-
+-strcpy_align_to_32:
+-    bcc     strcpy_align_to_64
+-
+-    ldrb    r4, [r1], #1
+-    strb    r4, [r0], #1
+-    cmp     r4, #0
+-    it      eq
+-    m_ret   inst=popeq
+-    ldrb    r5, [r1], #1
+-    strb    r5, [r0], #1
+-    cmp     r5, #0
+-    it      eq
+-    m_ret   inst=popeq
+-
+-strcpy_align_to_64:
+-    tst     r3, #4
+-    beq     strcpy_check_src_align
+-    ldr     r2, [r1], #4
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-    stmia   r0!, {r2}
+-    b       strcpy_check_src_align
+-
+-strcpy_complete:
+-    m_ret   inst=pop
+-
+-strcpy_unaligned_copy:
+-    // Dst is aligned to a double word, while src is at an unknown alignment.
+-    // There are 7 different versions of the unaligned copy code
+-    // to prevent overreading the src. The mainloop of every single version
+-    // will store 64 bits per loop. The difference is how much of src can
+-    // be read without potentially crossing a page boundary.
+-    tbb     [pc, r3]
+-strcpy_unaligned_branchtable:
+-    .byte 0
+-    .byte ((strcpy_unalign7 - strcpy_unaligned_branchtable)/2)
+-    .byte ((strcpy_unalign6 - strcpy_unaligned_branchtable)/2)
+-    .byte ((strcpy_unalign5 - strcpy_unaligned_branchtable)/2)
+-    .byte ((strcpy_unalign4 - strcpy_unaligned_branchtable)/2)
+-    .byte ((strcpy_unalign3 - strcpy_unaligned_branchtable)/2)
+-    .byte ((strcpy_unalign2 - strcpy_unaligned_branchtable)/2)
+-    .byte ((strcpy_unalign1 - strcpy_unaligned_branchtable)/2)
+-
+-    .p2align 2
+-    // Can read 7 bytes before possibly crossing a page.
+-strcpy_unalign7:
+-    ldr     r2, [r1], #4
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-
+-    ldrb    r3, [r1]
+-    cbz     r3, strcpy_unalign7_copy5bytes
+-    ldrb    r4, [r1, #1]
+-    cbz     r4, strcpy_unalign7_copy6bytes
+-    ldrb    r5, [r1, #2]
+-    cbz     r5, strcpy_unalign7_copy7bytes
+-
+-    ldr     r3, [r1], #4
+-    pld     [r1, #64]
+-
+-    lsrs    ip, r3, #24
+-    stmia   r0!, {r2, r3}
+-    beq     strcpy_unalign_return
+-    b       strcpy_unalign7
+-
+-strcpy_unalign7_copy5bytes:
+-    stmia   r0!, {r2}
+-    strb    r3, [r0]
+-strcpy_unalign_return:
+-    m_ret   inst=pop
+-
+-strcpy_unalign7_copy6bytes:
+-    stmia   r0!, {r2}
+-    strb    r3, [r0], #1
+-    strb    r4, [r0], #1
+-    m_ret   inst=pop
+-
+-strcpy_unalign7_copy7bytes:
+-    stmia   r0!, {r2}
+-    strb    r3, [r0], #1
+-    strb    r4, [r0], #1
+-    strb    r5, [r0], #1
+-    m_ret   inst=pop
+-
+-    .p2align 2
+-    // Can read 6 bytes before possibly crossing a page.
+-strcpy_unalign6:
+-    ldr     r2, [r1], #4
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-
+-    ldrb    r4, [r1]
+-    cbz     r4, strcpy_unalign_copy5bytes
+-    ldrb    r5, [r1, #1]
+-    cbz     r5, strcpy_unalign_copy6bytes
+-
+-    ldr     r3, [r1], #4
+-    pld     [r1, #64]
+-
+-    tst     r3, #0xff0000
+-    beq     strcpy_unalign6_copy7bytes
+-    lsrs    ip, r3, #24
+-    stmia   r0!, {r2, r3}
+-    beq     strcpy_unalign_return
+-    b       strcpy_unalign6
+-
+-strcpy_unalign6_copy7bytes:
+-    stmia   r0!, {r2}
+-    strh    r3, [r0], #2
+-    lsr     r3, #16
+-    strb    r3, [r0]
+-    m_ret   inst=pop
+-
+-    .p2align 2
+-    // Can read 5 bytes before possibly crossing a page.
+-strcpy_unalign5:
+-    ldr     r2, [r1], #4
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-
+-    ldrb    r4, [r1]
+-    cbz     r4, strcpy_unalign_copy5bytes
+-
+-    ldr     r3, [r1], #4
+-
+-    pld     [r1, #64]
+-
+-    sub     ip, r3, #0x01010101
+-    bic     ip, ip, r3
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_second_register
+-
+-    stmia   r0!, {r2, r3}
+-    b       strcpy_unalign5
+-
+-strcpy_unalign_copy5bytes:
+-    stmia   r0!, {r2}
+-    strb    r4, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_unalign_copy6bytes:
+-    stmia   r0!, {r2}
+-    strb    r4, [r0], #1
+-    strb    r5, [r0]
+-    m_ret   inst=pop
+-
+-    .p2align 2
+-    // Can read 4 bytes before possibly crossing a page.
+-strcpy_unalign4:
+-    ldmia   r1!, {r2}
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-
+-    ldmia   r1!, {r3}
+-    pld     [r1, #64]
+-
+-    sub     ip, r3, #0x01010101
+-    bic     ip, ip, r3
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_second_register
+-
+-    stmia   r0!, {r2, r3}
+-    b       strcpy_unalign4
+-
+-    .p2align 2
+-    // Can read 3 bytes before possibly crossing a page.
+-strcpy_unalign3:
+-    ldrb    r2, [r1]
+-    cbz     r2, strcpy_unalign3_copy1byte
+-    ldrb    r3, [r1, #1]
+-    cbz     r3, strcpy_unalign3_copy2bytes
+-    ldrb    r4, [r1, #2]
+-    cbz     r4, strcpy_unalign3_copy3bytes
+-
+-    ldr     r2, [r1], #4
+-    ldr     r3, [r1], #4
+-
+-    pld     [r1, #64]
+-
+-    lsrs    lr, r2, #24
+-    beq     strcpy_unalign_copy4bytes
+-
+-    sub     ip, r3, #0x01010101
+-    bic     ip, ip, r3
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_second_register
+-
+-    stmia   r0!, {r2, r3}
+-    b       strcpy_unalign3
+-
+-strcpy_unalign3_copy1byte:
+-    strb    r2, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_unalign3_copy2bytes:
+-    strb    r2, [r0], #1
+-    strb    r3, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_unalign3_copy3bytes:
+-    strb    r2, [r0], #1
+-    strb    r3, [r0], #1
+-    strb    r4, [r0]
+-    m_ret   inst=pop
+-
+-    .p2align 2
+-    // Can read 2 bytes before possibly crossing a page.
+-strcpy_unalign2:
+-    ldrb    r2, [r1]
+-    cbz     r2, strcpy_unalign_copy1byte
+-    ldrb    r3, [r1, #1]
+-    cbz     r3, strcpy_unalign_copy2bytes
+-
+-    ldr     r2, [r1], #4
+-    ldr     r3, [r1], #4
+-    pld     [r1, #64]
+-
+-    tst     r2, #0xff0000
+-    beq     strcpy_unalign_copy3bytes
+-    lsrs    ip, r2, #24
+-    beq     strcpy_unalign_copy4bytes
+-
+-    sub     ip, r3, #0x01010101
+-    bic     ip, ip, r3
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_second_register
+-
+-    stmia   r0!, {r2, r3}
+-    b       strcpy_unalign2
+-
+-    .p2align 2
+-    // Can read 1 byte before possibly crossing a page.
+-strcpy_unalign1:
+-    ldrb    r2, [r1]
+-    cbz     r2, strcpy_unalign_copy1byte
+-
+-    ldr     r2, [r1], #4
+-    ldr     r3, [r1], #4
+-
+-    pld     [r1, #64]
+-
+-    sub     ip, r2, #0x01010101
+-    bic     ip, ip, r2
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_first_register
+-
+-    sub     ip, r3, #0x01010101
+-    bic     ip, ip, r3
+-    ands    ip, ip, #0x80808080
+-    bne     strcpy_zero_in_second_register
+-
+-    stmia   r0!, {r2, r3}
+-    b       strcpy_unalign1
+-
+-strcpy_unalign_copy1byte:
+-    strb    r2, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_unalign_copy2bytes:
+-    strb    r2, [r0], #1
+-    strb    r3, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_unalign_copy3bytes:
+-    strh    r2, [r0], #2
+-    lsr     r2, #16
+-    strb    r2, [r0]
+-    m_ret   inst=pop
+-
+-strcpy_unalign_copy4bytes:
+-    stmia   r0, {r2}
+-    m_ret   inst=pop
+ END(strcpy)
++
++#endif
+Index: libc/arch-arm/cortex-a9/bionic/memset.S
+===================================================================
+--- libc/arch-arm/cortex-a9/bionic/memset.S	(revision 55656)
++++ libc/arch-arm/cortex-a9/bionic/memset.S	(working copy)
+@@ -73,50 +73,48 @@
+ 
+ /* memset() returns its first argument.  */
+ ENTRY(memset)
+-        .cfi_startproc
++    and     r1, r1, #0xff
++    cmp     r2, #0
++    bxeq    lr
++    orr     r1, r1, r1, lsl #8
++    tst     r0, #7
++    mov     r3, r0
++    orr     r1, r1, r1, lsl #16
++    beq     .Lmemset_align8
++.Lmemset_make_align:
++    strb    r1, [r3], #1
++    subs    r2, r2, #1
++    bxeq    lr
++    tst     r3, #7
++    bne     .Lmemset_make_align
+ 
+-        # The neon memset only wins for less than 132.
+-        cmp         r2, #132
+-        bhi         __memset_large_copy
+-
+-        stmfd       sp!, {r0}
+-        .save       {r0}
+-        .cfi_def_cfa_offset 4
+-        .cfi_rel_offset r0, 0
+-
+-        vdup.8      q0, r1
+-
+-        /* make sure we have at least 32 bytes to write */
+-        subs        r2, r2, #32
+-        blo         2f
+-        vmov        q1, q0
+-
+-1:      /* The main loop writes 32 bytes at a time */
+-        subs        r2, r2, #32
+-        vst1.8      {d0 - d3}, [r0]!
+-        bhs         1b
+-
+-2:      /* less than 32 left */
+-        add         r2, r2, #32
+-        tst         r2, #0x10
+-        beq         3f
+-
+-        // writes 16 bytes, 128-bits aligned
+-        vst1.8      {d0, d1}, [r0]!
+-3:      /* write up to 15-bytes (count in r2) */
+-        movs        ip, r2, lsl #29
+-        bcc         1f
+-        vst1.8      {d0}, [r0]!
+-1:      bge         2f
+-        vst1.32     {d0[0]}, [r0]!
+-2:      movs        ip, r2, lsl #31
+-        strmib      r1, [r0], #1
+-        strcsb      r1, [r0], #1
+-        strcsb      r1, [r0], #1
+-        ldmfd       sp!, {r0}
+-        bx          lr
+-
+-        .cfi_endproc
++.Lmemset_align8:
++    cmp     r2, #16
++    mov     r12, r1
++    blt     .Lmemset_less16
++    push    {r4, lr}
++    mov     r4, r1
++    mov     lr, r1
++.Lmemset_loop32:
++    subs    r2, r2, #32
++    stmhsia r3!, {r1, r4, r12, lr}
++    stmhsia r3!, {r1, r4, r12, lr}
++    bhs     .Lmemset_loop32
++    adds    r2, r2, #32
++    popeq   {r4, pc}
++    tst     r2, #16
++    stmneia r3!, {r1, r4, r12, lr}
++    pop     {r4, lr}
++    subs    r2, #16
++    bxeq    lr
++.Lmemset_less16:
++    movs    r2, r2, lsl #29
++    stmcsia r3!, {r1, r12}
++    strmi   r1, [r3], #4
++    movs    r2, r2, lsl #2
++    strcsh  r1, [r3], #2
++    strmib  r1, [r3], #1
++    bx      lr
+ END(memset)
+ 
+ ENTRY(__memset_large_copy)
+Index: libc/arch-arm/bionic/memcmp.S
+===================================================================
+--- libc/arch-arm/bionic/memcmp.S	(revision 55656)
++++ libc/arch-arm/bionic/memcmp.S	(working copy)
+@@ -40,6 +40,8 @@
+  * Optimized memcmp() for Cortex-A9.
+  */
+ 
++#if 0
++
+ ENTRY(memcmp)
+         pld         [r0, #(CACHE_LINE_SIZE * 0)]
+         pld         [r0, #(CACHE_LINE_SIZE * 1)]
+@@ -338,4 +340,164 @@
+         mov         r2, #4
+ 		ldmfd		sp!, {r5, r6, r7}
+         b           8b
++#else
++
++ENTRY(memcmp)
++    /* int memcmp(const void *, const void *, size_t); */
++        cmp         r0, r1
++        cmpne       r2, #0
++        moveq       r0, #0
++        bxeq        lr
++        PLD         (r0, #0)
++        PLD         (r1, #0)
++        mov         r3, r0
++        
++        eor         r12, r3, r1
++        tst         r12, #0x03
++        PLD         (r0, #32)
++        PLD         (r1, #32)
++        push        {lr}
++        bne         .Lmemcmp_nalign
++        tst         r3,  #0x03
++        beq         .Lmemcmp_align
++
++.Lmemcmp_make_align:
++        ldrb        r0,  [r3], #1               // align to 4 byte
++        ldrb        r12, [r1], #1
++        subs        r0,  r0, r12
++        popne       {pc}
++        subs        r2,  r2,  #1
++        popeq       {pc}
++        tst         r3,  #0x03
++        bne         .Lmemcmp_make_align
++
++.Lmemcmp_align:
++        subs        r2, r2, #16
++        blt         .Lmemcmp_align_less16
++        push        {r4 - r10}
++.Lmemcmp_align_loop16:
++        ldmia       r3!, {r4, r5, r6,  r7}
++        ldmia       r1!, {r8, r9, r10, lr}
++        pld         [r3, #64]
++        pld         [r1, #64]
++        eors        r0,  r8, r4
++        bne         .Lmemcmp_align_out_l1
++        eors        r0,  r9, r5
++        bne         .Lmemcmp_align_out_l2
++        eors        r0,  r10, r6
++        bne         .Lmemcmp_align_out_l3
++        eors        r0,  lr, r7
++        bne         .Lmemcmp_align_out_l4
++        subs        r2, r2, #16
++        bge         .Lmemcmp_align_loop16
++        adds        r2, r2, #16
++        pop         {r4 - r10}
++        popeq       {pc}
++        sub         r2, r2, #16
++        b           .Lmemcmp_align_less16
++
++.Lmemcmp_align_out_l1:
++        mov         r3, r4
++        mov         r2, r8
++        b           .Lmemcmp_align_check_not_equal
++.Lmemcmp_align_out_l2:
++        mov         r3, r5
++        mov         r2, r9
++        b           .Lmemcmp_align_check_not_equal
++.Lmemcmp_align_out_l3:
++        mov         r3, r6
++        mov         r2, r10
++        b           .Lmemcmp_align_check_not_equal
++.Lmemcmp_align_out_l4:
++        mov         r3, r7
++        mov         r2, lr
++.Lmemcmp_align_check_not_equal:
++        mov         r12, #0xff
++        and         r0, r12, r3
++        and         r1, r12, r2
++        subs        r0, r0, r1
++        popne       {r4 - r10, pc}
++        and         r0, r12, r3, lsr #8
++        and         r1, r12, r2, lsr #8
++        subs        r0, r0, r1
++        popne       {r4 - r10, pc}
++        and         r0, r12, r3, lsr #16
++        and         r1, r12, r2, lsr #16
++        subs        r0, r0, r1
++        popne       {r4 - r10, pc}
++        and         r0, r12, r3, lsr #24
++        sub         r0, r0, r2, lsr #24
++        pop         {r4 - r10, pc}
++
++.Lmemcmp_align_less16:
++        add         r2, r2, #16
++        cmp         r2,  #4
++        blt         .Lmemcmp_align_less4
++.Lmemcmp_align_loop4:
++        ldr         lr,  [r3], #4
++        ldr         r12, [r1], #4
++        sub         r2, r2, #4
++        eors        r0, r12, lr
++        bne         .Lmemcmp_align_check_not_equal5
++        cmp         r2, #4
++        bge         .Lmemcmp_align_loop4
++        cmp         r2, #0
++        moveq       r0, #0
++        popeq       {pc}
++        b           .Lmemcmp_align_less4
++
++.Lmemcmp_align_check_not_equal5:
++        mov         r3, #0xff
++        and         r0, r3, lr
++        and         r1, r3, r12
++        subs        r0, r0, r1
++        popne       {pc}
++        and         r0, r3, lr,  lsr #8
++        and         r1, r3, r12, lsr #8
++        subs        r0, r0, r1
++        popne       {pc}
++        and         r0, r3, lr,  lsr #16
++        and         r1, r3, r12, lsr #16
++        subs        r0, r0, r1
++        popne       {pc}
++        and         r0, r3,  lr, lsr #24
++        sub         r0, r0, r12, lsr #24
++        pop         {pc}
++.Lmemcmp_align_less4:
++        ldrb        lr, [r3], #1
++        ldrb        r12, [r1], #1
++        subs        r0, lr, r12
++        popne       {pc}
++        subs        r2, r2, #1
++        bne         .Lmemcmp_align_less4
++        pop         {pc}
++
++.Lmemcmp_nalign:
++        subs        r2, #(16)
++        blt         .Lmemcmp_align_less16
++.Lmemcmp_nalign_loop16:        
++        PLD         (r3, #64)
++        PLD         (r1, #64)
++        ldr         lr,  [r3], #4
++        ldr         r12, [r1], #4
++        eors        r0, r12, lr
++        ldreq       lr,  [r3], #4
++        ldreq       r12, [r1], #4
++        eoreqs      r0, r12, lr
++        ldreq       lr,  [r3], #4
++        ldreq       r12, [r1], #4
++        eoreqs      r0, r12, lr
++        ldreq       lr,  [r3], #4
++        ldreq       r12, [r1], #4
++        eoreqs      r0, r12, lr
++        bne         .Lmemcmp_align_check_not_equal5
++        subs        r2, r2, #16
++        bge         .Lmemcmp_nalign_loop16 
++        adds        r2, r2, #16
++        popeq       {pc}
++        sub         r2, r2, #16
++        b           .Lmemcmp_align_less16
+ END(memcmp)
++
++#endif
++
+Index: libc/arch-arm/bionic/memset.S
+===================================================================
+--- libc/arch-arm/bionic/memset.S	(revision 55656)
++++ libc/arch-arm/bionic/memset.S	(working copy)
+@@ -1,34 +1,111 @@
+-/*
+- * Copyright (C) 2008 The Android Open Source Project
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- *  * Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- *  * Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in
+- *    the documentation and/or other materials provided with the
+- *    distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+- * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+- * OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+- * AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+- * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- */
++/* Copyright (c) 2010-2011, Linaro Limited
++   All rights reserved.
+ 
++   Redistribution and use in source and binary forms, with or without
++   modification, are permitted provided that the following conditions
++   are met:
++
++      * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++
++      * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++
++      * Neither the name of Linaro Limited nor the names of its
++      contributors may be used to endorse or promote products derived
++      from this software without specific prior written permission.
++
++   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++
++   Written by Dave Gilbert <david.gilbert@linaro.org>
++   Adapted to Bionic by Bernhard Rosenkraenzer <Bernhard.Rosenkranzer@linaro.org>
++
++   This memset routine is optimised on a Cortex-A9 and should work on
++   all ARMv7 processors. */
++
+ #include <machine/cpu-features.h>
+ #include <machine/asm.h>
+ 
++	.syntax unified
++	.arch armv7-a
++
++
++@ 2011-08-30 david.gilbert@linaro.org
++@    Extracted from local git 2f11b436
++
++@ this lets us check a flag in a 00/ff byte easily in either endianness
++#ifdef __ARMEB__
++#define CHARTSTMASK(c) 1<<(31-(c*8))
++#else
++#define CHARTSTMASK(c) 1<<(c*8)
++#endif
++	.text
++	.thumb
++
++@ ---------------------------------------------------------------------------
++    .code   32
++	.p2align 4,,15
++
++ENTRY(bzero)
++    mov     r2, r1
++    mov     r1, #0
++END(bzero)
++
++ENTRY(memset)
++    and     r1, r1, #0xff
++    cmp     r2, #0
++    bxeq    lr
++    orr     r1, r1, r1, lsl #8
++    tst     r0, #7
++    mov     r3, r0
++    orr     r1, r1, r1, lsl #16
++    beq     .Lmemset_align8
++.Lmemset_make_align:
++    strb    r1, [r3], #1
++    subs    r2, r2, #1
++    bxeq    lr
++    tst     r3, #7
++    bne     .Lmemset_make_align
++
++.Lmemset_align8:
++    cmp     r2, #16
++    mov     r12, r1
++    blt     .Lmemset_less16
++    push    {r4, lr}
++    mov     r4, r1
++    mov     lr, r1
++.Lmemset_loop32:
++    subs    r2, r2, #32
++    stmhsia r3!, {r1, r4, r12, lr}
++    stmhsia r3!, {r1, r4, r12, lr}
++    bhs     .Lmemset_loop32
++    adds    r2, r2, #32
++    popeq   {r4, pc}
++    tst     r2, #16
++    stmneia r3!, {r1, r4, r12, lr}
++    pop     {r4, lr}
++    subs    r2, #16
++    bxeq    lr
++.Lmemset_less16:
++    movs    r2, r2, lsl #29
++    stmcsia r3!, {r1, r12}
++    strmi   r1, [r3], #4
++    movs    r2, r2, lsl #2
++    strhcs  r1, [r3], #2
++    strbmi  r1, [r3], #1
++    bx      lr
++
+ 		/*
+ 		 * Optimized memset() for ARM.
+          *

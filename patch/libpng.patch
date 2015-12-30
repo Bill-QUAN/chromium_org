@@ -1,0 +1,698 @@
+Index: pngrutil.c
+===================================================================
+--- pngrutil.c	(revision 55656)
++++ pngrutil.c	(working copy)
+@@ -67,6 +67,7 @@
+    return (i);
+ }
+ #ifndef PNG_READ_BIG_ENDIAN_SUPPORTED
++#ifndef    TARGET_ARCH_ARM 
+ /* Grab an unsigned 32-bit integer from a buffer in big-endian format. */
+ png_uint_32 PNGAPI
+ png_get_uint_32(png_bytep buf)
+@@ -103,6 +104,56 @@
+ 
+    return (i);
+ }
++#else
++// arm v6 above support unaligned load/store and rev instrucions
++inline png_uint_32 PNGAPI
++png_get_uint_32(png_bytep buf)
++{
++    png_uint_32 i, tmp;
++
++    tmp = *((png_uint_32 *)buf);
++    asm (
++        "rev    %[i], %[tmp]          \n" 
++        : [i] "=r" (i)
++        : [tmp] "r" (tmp)
++        :"memory", "cc"
++    );
++
++   return (i);
++}
++
++inline png_int_32 PNGAPI
++png_get_int_32(png_bytep buf)
++{
++    png_uint_32 i, tmp;
++
++    tmp = *((png_uint_32 *)buf);
++    asm (
++        "rev    %[i], %[tmp]          \n" 
++        : [i] "=r" (i)
++        : [tmp] "r" (tmp)
++        :"memory", "cc"
++    );
++
++   return (i);
++}
++
++inline png_uint_16 PNGAPI
++png_get_uint_16(png_bytep buf)
++{
++    png_uint_16 i, tmp;
++
++    tmp = *((png_uint_16 *)buf);
++    asm (
++        "rev16    %[i], %[tmp]          \n" 
++        : [i] "=r" (i)
++        : [tmp] "r" (tmp)
++        :"memory", "cc"
++    );
++
++   return (i);
++}
++#endif
+ #endif /* PNG_READ_BIG_ENDIAN_SUPPORTED */
+ 
+ /* Read the chunk header (length + type name).
+@@ -2953,6 +3004,9 @@
+ }
+ #endif /* PNG_READ_INTERLACING_SUPPORTED */
+ 
++#include <cutils/log.h>
++#define LOG_TAG "skia"
++
+ void /* PRIVATE */
+ png_read_filter_row(png_structp png_ptr, png_row_infop row_info, png_bytep row,
+    png_bytep prev_row, int filter)
+@@ -2971,11 +3025,243 @@
+          png_bytep rp = row + bpp;
+          png_bytep lp = row;
+ 
++    #ifdef TARGET_ARCH_ARM
++        // neon can't be used here, rp and lp are relative 
++        // it is a tragedy if bpp is small than 4, especially bpp is 3
++        // but it is lucky that these conditions do not occur often
++        i = 4 - ((uint32_t )rp & 0x03);                                 // make rp aligned by 4
++        if (istop - bpp <= i) {
++            for (i = bpp; i < istop; i++) {
++               *rp = (png_byte)(((int)(*rp) + (int)(*lp++)) & 0xff);
++               rp++;
++            }
++            break;
++        }
++        if (i == 4) {
++            i = istop - bpp;    
++        } else {
++            uint32_t j;
++            for (j = i; j; j--) {
++               *rp = (png_byte)(((int)(*rp) + (int)(*lp++)) & 0xff);
++               rp++;
++            }
++            i = (istop - bpp - i);
++        }
++        if (bpp == 4) {
++            asm volatile (
++                "cmp        %[i], #32                           \n"
++                "ldr        r4, [%[lp]]                         \n"     // first 4 bytes data
++                "bcc        .LPNG_FILTER_VALUE_SUB_Less32       \n"
++            ".LPNG_FILTER_VALUE_SUB_Loop32:                     \n" 
++                "ldmia      %[rp], {r5 - r12}                   \n"     // load 32 bytes data
++                "sub        %[i], %[i], #32                     \n"
++                "cmp        %[i], #32                           \n"
++                "uadd8      r4,  r4,  r5                        \n"
++                "uadd8      r5,  r4,  r6                        \n"
++                "uadd8      r6,  r5,  r7                        \n"
++                "uadd8      r7,  r6,  r8                        \n"
++                "uadd8      r8,  r7,  r9                        \n"
++                "uadd8      r9,  r8,  r10                       \n"
++                "uadd8      r10, r9,  r11                       \n"
++                "uadd8      r11, r10, r12                       \n"
++                "stmia      %[rp]!, {r4 - r11}                  \n"
++                "mov        r4, r11                             \n"
++                "bcs        .LPNG_FILTER_VALUE_SUB_Loop32       \n"
++                "cmp        %[i], #0                            \n"
++                "beq        .LPNG_FILTER_VALUE_SUB_out          \n"
++
++            ".LPNG_FILTER_VALUE_SUB_Less32:                     \n"
++                "cmp        %[i], #16                           \n" 
++                "bcc        .LPNG_FILTER_VALUE_SUB_Less16       \n"
++                "ldmia      %[rp], {r5 - r8}                    \n"     // load 16 bytes data
++                "subs       %[i], %[i], #16                     \n"
++                "uadd8      r4,  r4,  r5                        \n"
++                "uadd8      r5,  r4,  r6                        \n"
++                "uadd8      r6,  r5,  r7                        \n"
++                "uadd8      r7,  r6,  r8                        \n"
++                "stmia      %[rp]!, {r4 - r7}                   \n"
++                "mov        r4, r7                              \n"
++                "beq        .LPNG_FILTER_VALUE_SUB_out          \n"
++
++            ".LPNG_FILTER_VALUE_SUB_Less16:                     \n"
++                "cmp        %[i], #8                            \n"
++                "bcc        .LPNG_FILTER_VALUE_SUB_Less8        \n"
++                "ldmia      %[rp], {r5 - r6}                    \n"     // load 8 bytes data
++                "subs       %[i], %[i], #8                      \n"
++                "uadd8      r4,  r4,  r5                        \n"
++                "uadd8      r5,  r4,  r6                        \n"
++                "stmia      %[rp]!, {r4 - r5}                   \n"
++                "mov        r4,  r5                             \n"
++                "beq        .LPNG_FILTER_VALUE_SUB_out          \n"
++
++            ".LPNG_FILTER_VALUE_SUB_Less8:                      \n" 
++                "cmp        %[i], #4                            \n" 
++                "bcc        .LPNG_FILTER_VALUE_SUB_Less4        \n"
++                "ldr        r5, [%[rp]]                         \n"
++                "subs       %[i], %[i], #4                      \n"
++                "uadd8      r4, r4, r5                          \n"
++                "str        r4, [%[rp]], #4                     \n"
++                "beq        .LPNG_FILTER_VALUE_SUB_out          \n"
++
++            ".LPNG_FILTER_VALUE_SUB_Less4:                      \n" 
++                "cmp        %[i], #2                            \n" 
++                "bcc        .LPNG_FILTER_VALUE_SUB_Less2        \n"
++                "ldrh       r5, [%[rp]]                         \n"
++                "subs       %[i], %[i], #2                      \n"
++                "uadd8      r4, r4, r5                          \n"
++                "strh       r4, [%[rp]], #2                     \n"
++                "lsr        r4, r4, #16                         \n"
++                "beq        .LPNG_FILTER_VALUE_SUB_out          \n"
++            
++            ".LPNG_FILTER_VALUE_SUB_Less2:                      \n" 
++                "ldrb       r5,  [%[rp]]                        \n"
++                "add        r4,  r4, r5                         \n"
++                "strb       r4,  [%[rp]], #1                    \n"
++            ".LPNG_FILTER_VALUE_SUB_out:                        \n"
++                :
++                : [lp] "r" (lp), [rp] "r" (rp), [i] "r" (i)
++                : "memory", "cc", "r12", "r11", "r10", "r9",
++                  "r8", "r7", "r6", "r5", "r4"
++            );
++        } else if (bpp == 2) {
++            asm volatile (
++                "cmp        %[i], #8                            \n"
++                "ldrh       r4, [%[lp]]                         \n"
++                "bcc        .L2PNG_FILTER_VALUE_SUB_Less8       \n"
++            ".L2PNG_FILTER_VALUE_SUB_Loop8:                     \n"
++                "ldrh       r8,  [%[rp]]                        \n"
++                "ldrh       r9,  [%[rp], # 2]                   \n"
++                "ldrh       r10, [%[rp], # 4]                   \n"
++                "ldrh       r11, [%[rp], # 6]                   \n"
++                "sub        %[i], %[i], #8                      \n"
++                "cmp        %[i], #8                            \n"
++                "uadd8      r4, r4, r8                          \n"
++                "uadd8      r5, r4, r9                          \n"
++                "uadd8      r6, r5, r10                         \n"
++                "uadd8      r7, r6, r11                         \n"
++                "strh       r4, [%[rp]], #2                     \n"
++                "strh       r5, [%[rp]], #2                     \n"
++                "strh       r6, [%[rp]], #2                     \n"
++                "strh       r7, [%[rp]], #2                     \n"
++                "mov        r4, r7                              \n"
++                "bcs        .L2PNG_FILTER_VALUE_SUB_Loop8       \n"
++                "cmp        %[i], #0                            \n"
++                "beq        .L2PNG_FILTER_VALUE_SUB_out         \n"
++
++            ".L2PNG_FILTER_VALUE_SUB_Less8:                     \n"
++                "cmp        %[i], #4                            \n"
++                "bcc        .L2PNG_FILTER_VALUE_SUB_Less4       \n"
++                "ldrh       r8,  [%[rp]]                        \n"
++                "ldrh       r9,  [%[rp], #2]                    \n"
++                "subs       %[i], %[i], #4                      \n"
++                "uadd8      r4, r4, r8                          \n"
++                "uadd8      r5, r4, r9                          \n"
++                "strh       r4, [%[rp]], #2                     \n"
++                "strh       r5, [%[rp]], #2                     \n"
++                "mov        r4, r5                              \n"
++                "beq        .L2PNG_FILTER_VALUE_SUB_out         \n"
++
++            ".L2PNG_FILTER_VALUE_SUB_Less4:                     \n"
++                "cmp        %[i], #2                            \n"
++                "bcc        .L2PNG_FILTER_VALUE_SUB_Less2       \n"
++                "ldrh       r8,  [%[rp]]                        \n"
++                "subs       %[i], %[i], #2                      \n"
++                "uadd8      r4,  r4, r8                         \n"
++                "strh       r4, [%[rp]], #2                     \n"
++                "beq        .L2PNG_FILTER_VALUE_SUB_out         \n"
++
++            ".L2PNG_FILTER_VALUE_SUB_Less2:                     \n"     // small than 2
++                "ldrb       r8,  [%[rp]]                        \n"
++                "add        r4,  r4, r8                         \n"
++                "strb       r4,  [%[rp]], #1                    \n"
++            ".L2PNG_FILTER_VALUE_SUB_out:                       \n"
++                :
++                : [lp] "r" (lp), [rp] "r" (rp), [i] "r" (i)
++                : "memory", "cc", "r12", "r11", "r10", "r9",
++                  "r8", "r7", "r6", "r5", "r4"
++            );
++        } else if (bpp == 1) {
++            asm volatile (
++                "cmp        %[i], #8                            \n"
++                "ldrb       r4, [%[lp]]                         \n"
++                "bcc        .L3PNG_FILTER_VALUE_SUB_Less8       \n"
++            ".L3PNG_FILTER_VALUE_SUB_Loop8:                     \n"
++                "ldm        %[rp], {r11, r12}                   \n"
++                "sub        %[i], %[i], #8                      \n"
++                "cmp        %[i], #8                            \n"
++                "add        r4,  r4,  r11                       \n"
++                "add        r5,  r4,  r11, lsr #8               \n"
++                "add        r6,  r5,  r11, lsr #16              \n"
++                "add        r7,  r6,  r11, lsr #24              \n"
++                "add        r8,  r7,  r12                       \n"
++                "add        r9,  r8,  r12, lsr #8               \n"
++                "add        r10, r9,  r12, lsr #16              \n"
++                "add        r11, r10, r12, lsr #24              \n"
++                "strb       r4,  [%[rp]], #1                    \n"
++                "strb       r5,  [%[rp]], #1                    \n"
++                "strb       r6,  [%[rp]], #1                    \n"
++                "strb       r7,  [%[rp]], #1                    \n"
++                "strb       r8,  [%[rp]], #1                    \n"
++                "strb       r9,  [%[rp]], #1                    \n"
++                "strb       r10, [%[rp]], #1                    \n"
++                "strb       r11, [%[rp]], #1                    \n"
++                "and        r4, r11, #0xff                      \n"
++                "bcs        .L3PNG_FILTER_VALUE_SUB_Loop8       \n"
++                "cmp        %[i], #0                            \n"
++                "beq        .L3PNG_FILTER_VALUE_SUB_out         \n"
++
++            ".L3PNG_FILTER_VALUE_SUB_Less8:                     \n"
++                "cmp        %[i], #4                            \n"
++                "bcc        .L3PNG_FILTER_VALUE_SUB_Less4       \n"
++                "ldr        r11,  [%[rp]]                       \n"
++                "subs       %[i], %[i], #4                      \n"
++                "add        r4,  r4,  r11                       \n"
++                "add        r5,  r4,  r11, lsr #8               \n"
++                "add        r6,  r5,  r11, lsr #16              \n"
++                "add        r7,  r6,  r11, lsr #24              \n"
++                "strb       r4,  [%[rp]], #1                    \n"
++                "strb       r5,  [%[rp]], #1                    \n"
++                "strb       r6,  [%[rp]], #1                    \n"
++                "strb       r7,  [%[rp]], #1                    \n"
++                "and        r4,  r7, #0xff                      \n"
++                "beq        .L3PNG_FILTER_VALUE_SUB_out         \n"
++
++            ".L3PNG_FILTER_VALUE_SUB_Less4:                     \n"
++                "cmp        %[i], #2                            \n"
++                "bcc        .L3PNG_FILTER_VALUE_SUB_Less2       \n"
++                "ldrh       r11,  [%[rp]]                       \n"
++                "subs       %[i], %[i], #2                      \n"
++                "add        r4,  r4,  r11                       \n"
++                "add        r5,  r4,  r11, lsr #8               \n"
++                "strb       r4,  [%[rp]], #1                    \n"
++                "strb       r5,  [%[rp]], #1                    \n"
++                "and        r4, r5, #0xff                       \n"
++                "beq        .L3PNG_FILTER_VALUE_SUB_out         \n"
++
++            ".L3PNG_FILTER_VALUE_SUB_Less2:                     \n"     // small than 2
++                "ldrb       r11, [%[rp]]                        \n"
++                "add        r4,  r4, r11                        \n"
++                "strb       r4,  [%[rp]], #1                    \n"
++            ".L3PNG_FILTER_VALUE_SUB_out:                       \n"
++                :
++                : [lp] "r" (lp), [rp] "r" (rp), [i] "r" (i)
++                : "memory", "cc", "r12", "r11", "r10", "r9",
++                  "r8", "r7", "r6", "r5", "r4"
++            );
++        } else {
++            for (; i > 0; i--)
++            {
++               *rp = (png_byte)(((int)(*rp) + (int)(*lp++)) & 0xff);
++               rp++;
++            }
++        }
++    #else
+          for (i = bpp; i < istop; i++)
+          {
+             *rp = (png_byte)(((int)(*rp) + (int)(*lp++)) & 0xff);
+             rp++;
+          }
++    #endif
+          break;
+       }
+       case PNG_FILTER_VALUE_UP:
+@@ -2985,11 +3271,89 @@
+          png_bytep rp = row;
+          png_bytep pp = prev_row;
+ 
++    #ifdef TARGET_ARCH_ARM
++        // make sure these two memory area are not overlap
++        if ((pp < rp) && (uint32_t)(pp + istop) > (uint32_t)(rp)) {
++            for (i = 0; i < istop; i++)
++            {
++               *rp = (png_byte)(((int)(*rp) + (int)(*pp++)) & 0xff);
++               rp++;
++            }
++        } else {
++            i = istop;
++            asm volatile (
++                "cmp        %[i], #32                           \n"
++                "bcc        .LPNG_FILTER_VALUE_UP_Less32        \n"
++            ".LPNG_FILTER_VALUE_UP_Loop32:                      \n"     // 32 bytes each loop
++                "vld1.8     {q0, q1}, [%[pp]]!                  \n"
++                "vld1.8     {q2, q3}, [%[rp]]                   \n"
++                "sub        %[i], %[i], #32                     \n"
++                "cmp        %[i], #32                           \n"
++                "vadd.u8    q0, q0, q2                          \n"
++                "vadd.u8    q1, q1, q3                          \n"
++                "vst1.8     {q0, q1}, [%[rp]]!                  \n"
++                "bcs        .LPNG_FILTER_VALUE_UP_Loop32        \n"
++                "cmp        %[i], #0                            \n"
++                "beq        .LPNG_FILTER_VALUE_UP_out           \n"
++
++            ".LPNG_FILTER_VALUE_UP_Less32:                      \n"     // small than 32
++                "cmp        %[i], #16                           \n"     // process 16 bytes
++                "bcc        .LPNG_FILTER_VALUE_UP_Less16        \n"
++                "vld1.8     {q0}, [%[pp]]!                      \n"
++                "vld1.8     {q2}, [%[rp]]                       \n"
++                "subs       %[i], %[i], #16                     \n"
++                "vadd.u8    q0, q0, q2                          \n"
++                "vst1.8     {q0}, [%[rp]]!                      \n"
++                "beq        .LPNG_FILTER_VALUE_UP_out           \n"
++
++            ".LPNG_FILTER_VALUE_UP_Less16:                      \n"     // small than 16
++                "cmp        %[i], #8                            \n"     // process 8 bytes
++                "bcc        .LPNG_FILTER_VALUE_UP_Less8         \n"
++                "vld1.8     {d0}, [%[pp]]!                      \n"
++                "vld1.8     {d2}, [%[rp]]                       \n"
++                "subs       %[i], %[i], #8                      \n"
++                "vadd.u8    d0, d0, d2                          \n"
++                "vst1.8     {d0}, [%[rp]]!                      \n"
++                "beq        .LPNG_FILTER_VALUE_UP_out           \n"
++
++            ".LPNG_FILTER_VALUE_UP_Less8:                       \n"     // small than 8
++                "cmp        %[i], #4                            \n"     // process 4 bytes
++                "bcc        .LPNG_FILTER_VALUE_UP_Less4         \n"
++                "ldr        r12, [%[pp]], #4                    \n"
++                "ldr        r11, [%[rp]]                        \n"
++                "subs       %[i], %[i], #4                      \n"
++                "uadd8      r11, r11, r12                       \n"
++                "str        r11, [%[rp]], #4                    \n"
++                "beq        .LPNG_FILTER_VALUE_UP_out           \n"
++
++            ".LPNG_FILTER_VALUE_UP_Less4:                       \n"     // small than 4
++                "cmp        %[i], #2                            \n"     // process 2 bytes
++                "bcc        .LPNG_FILTER_VALUE_UP_Less2         \n"
++                "ldrh       r12, [%[pp]], #2                    \n"
++                "ldrh       r11, [%[rp]]                        \n"
++                "subs       %[i], %[i], #2                      \n"
++                "uadd8      r11, r11, r12                       \n"
++                "strh       r11, [%[rp]], #2                    \n"
++                "beq        .LPNG_FILTER_VALUE_UP_out           \n"
++
++            ".LPNG_FILTER_VALUE_UP_Less2:                       \n"     // small than 2
++                "ldrb       r12, [%[pp]], #1                    \n"
++                "ldrb       r11, [%[rp]]                        \n"
++                "add        r11, r11, r12                       \n"
++                "strb       r11, [%[rp]], #1                    \n"
++            ".LPNG_FILTER_VALUE_UP_out:                         \n"
++                :
++                : [pp] "r" (pp), [rp] "r" (rp), [i] "r" (i)
++                : "memory", "cc", "r12", "r11"
++            );
++        }
++    #else
+          for (i = 0; i < istop; i++)
+          {
+             *rp = (png_byte)(((int)(*rp) + (int)(*pp++)) & 0xff);
+             rp++;
+          }
++    #endif
+          break;
+       }
+       case PNG_FILTER_VALUE_AVG:
+@@ -3003,17 +3367,93 @@
+ 
+          for (i = 0; i < bpp; i++)
+          {
+-            *rp = (png_byte)(((int)(*rp) +
+-               ((int)(*pp++) / 2 )) & 0xff);
++            *rp = (png_byte)(((int)(*rp) + ((int)(*pp++) / 2 )) & 0xff);
+             rp++;
+          }
+ 
++    #if 0
++        /*
++         * close this optimization branch because 'lp' is overlap with 'rp'
++         */
++        i = istop;
++        asm volatile (
++            "cmp        %[i], #32                           \n"
++            "bcc        .LPNG_FILTER_VALUE_AVG_Less32       \n"
++        ".LPNG_FILTER_VALUE_AVG_Loop32:                     \n"     // 32 bytes each loop
++            "vld1.8     {q0, q1}, [%[pp]]!                  \n"
++            "vld1.8     {q10, q11}, [%[lp]]!                \n"
++            "vld1.8     {q2, q3}, [%[rp]]                   \n"
++            "sub        %[i], %[i], #32                     \n"
++            "cmp        %[i], #32                           \n"
++            "vhadd.u8   q8, q0, q10                         \n"     // (int)(*pp++ + *lp++) / 2
++            "vhadd.u8   q9, q1, q11                         \n"     // (int)(*pp++ + *lp++) / 2
++            "vadd.u8    q0, q8, q2                          \n"     // ((int)(*rp) + (int)(*pp++ + *lp++) / 2 ) & 0xff
++            "vadd.u8    q1, q9, q3                          \n"
++            "vst1.8     {q0, q1}, [%[rp]]!                  \n"
++            "bcs        .LPNG_FILTER_VALUE_AVG_Loop32       \n"
++            "cmp        %[i], #0                            \n"
++            "beq        .LPNG_FILTER_VALUE_AVG_out          \n"
++
++        ".LPNG_FILTER_VALUE_AVG_Less32:                     \n"     // small than 32
++            "cmp        %[i], #16                           \n"     // process 16 bytes
++            "bcc        .LPNG_FILTER_VALUE_AVG_Less16       \n"
++            "vld1.8     {q0}, [%[pp]]!                      \n"
++            "vld1.8     {q10}, [%[lp]]!                     \n"
++            "vld1.8     {q2}, [%[rp]]                       \n"
++            "subs       %[i], %[i], #16                     \n"
++            "vhadd.u8   q8, q0, q10                         \n"     // (int)(*pp++ + *lp++) / 2
++            "vadd.u8    q0, q8, q2                          \n"
++            "vst1.8     {q0}, [%[rp]]!                      \n"
++            "beq        .LPNG_FILTER_VALUE_AVG_out          \n"
++
++        ".LPNG_FILTER_VALUE_AVG_Less16:                     \n"     // small than 16
++            "cmp        %[i], #8                            \n"     // process 8 bytes
++            "bcc        .LPNG_FILTER_VALUE_AVG_Less8        \n"
++            "vld1.8     {d0}, [%[pp]]!                      \n"
++            "vld1.8     {d20}, [%[lp]]!                     \n"
++            "vld1.8     {d2}, [%[rp]]                       \n"
++            "subs       %[i], %[i], #8                      \n"
++            "vhadd.u8   d3, d0, d20                         \n"     // (int)(*pp++ + *lp++) / 2
++            "vadd.u8    d0, d3, d2                          \n"
++            "vst1.8     {d0}, [%[rp]]!                      \n"
++            "beq        .LPNG_FILTER_VALUE_AVG_out          \n"
++
++        ".LPNG_FILTER_VALUE_AVG_Less8:                      \n"     // small than 8
++            "vld1.8     {d0}, [%[pp]]!                      \n"
++            "vld1.8     {d20}, [%[lp]]!                     \n"
++            "vld1.8     {d2}, [%[rp]]                       \n"
++            "vhadd.u8   d3, d0, d20                         \n"     // (int)(*pp++ + *lp++) / 2
++            "vadd.u8    d0, d3, d2                          \n"
++            "vmov       r10, r11, d0                        \n"
++            "cmp        %[i], #4                            \n"     // process 4 bytes
++            "bcc        .LPNG_FILTER_VALUE_AVG_Less4        \n"
++            "subs       %[i], %[i], #4                      \n"
++            "str        r10, [%[rp]], #4                    \n"
++            "beq        .LPNG_FILTER_VALUE_AVG_out          \n"
++            "mov        r10, r11                            \n"
++
++        ".LPNG_FILTER_VALUE_AVG_Less4:                      \n"     // small than 4
++            "cmp        %[i], #2                            \n"     // process 2 bytes
++            "bcc        .LPNG_FILTER_VALUE_AVG_Less2        \n"
++            "subs       %[i], %[i], #2                      \n"
++            "strh       r10, [%[rp]], #2                    \n"
++            "beq        .LPNG_FILTER_VALUE_AVG_out          \n"
++            "lsr        r10, #16                            \n"
++
++        ".LPNG_FILTER_VALUE_AVG_Less2:                      \n"     // small than 2
++            "strb       r10, [%[rp]], #1                    \n"
++        ".LPNG_FILTER_VALUE_AVG_out:                        \n"
++            :
++            : [pp] "r" (pp), [rp] "r" (rp), [i] "r" (i), [lp] "r" (lp)
++            : "memory", "cc", "r12", "r11", "r10"
++        );
++    #else
+          for (i = 0; i < istop; i++)
+          {
+-            *rp = (png_byte)(((int)(*rp) +
+-               (int)(*pp++ + *lp++) / 2 ) & 0xff);
++            *rp = (png_byte)(((int)(*rp) + (int)(*pp++ + *lp++) / 2 ) & 0xff);
+             rp++;
+          }
++    #endif
+          break;
+       }
+       case PNG_FILTER_VALUE_PAETH:
+@@ -3032,6 +3472,84 @@
+             rp++;
+          }
+ 
++    #ifdef  TARGET_ARCH_ARM
++        if ((bpp == 4) && !(istop % 4)) {
++            i = istop;
++            uint32_t tmp;
++            asm volatile (
++                "cmp        %[i], #4                        \n"
++                "vld1.32    {d4[0]}, [%[cp]]                \n"         // c = *cp++;
++                "vld1.32    {d0[0]}, [%[lp]]                \n"         // a = *lp++;
++                "bcc        .LPNG_FILTER_VALUE_PAETH_less4  \n"
++            ".LPNG_FILTER_VALUE_PAETH_loop4:                \n"
++                "vld1.32    {d2[0]}, [%[pp]]!               \n"         // b = *pp++;
++                "vld1.32    {d6[0]}, [%[rp]]                \n"         // *rp
++                "sub        %[i], %[i], #4                  \n"
++                "vsubl.u8   q14, d2, d4                     \n"         // pa = b - c
++                "vsubl.u8   q15, d0, d4                     \n"         // pb = a - c
++                "vadd.u16   d26, d28, d30                   \n"         // pc = pa + pb
++                "vabs.s16   d28, d28                        \n"         // |pa|
++                "vabs.s16   d30, d30                        \n"         // |pb|
++                "vabs.s16   d26, d26                        \n"         // |pc|
++                "vcge.u16   d16, d30, d28                   \n"         // |pb| >= |pa| ?
++                "vcge.u16   d18, d26, d28                   \n"         // |pc| >= |pa| ?
++                "vcge.u16   d24, d26, d30                   \n"         // |pc| >= |pb| ?
++                "vand.u16   d20, d16, d18                   \n"         // |pa| <= |pb| && |pa| <= |pc|
++                "vshrn.u16  d24, q12, #8                    \n"         // |pc| >= |pb| ? 8bit
++                "vshrn.u16  d22, q10, #8                    \n"         // |pa| <= |pb| && |pa| <= |pc| 8bit
++                "vbsl       d24, d2,  d4                    \n"         // (pb <= pc) ? b : c
++                "vbsl       d22, d0,  d24                   \n"         // (pa <= pb && pa <= pc)?a:(pb <= pc)?b:c 
++                "vadd.u8    d6,  d6,  d22                   \n"
++                "cmp        %[i], #4                        \n"
++                "vst1.32    {d6[0]}, [%[rp]]!               \n"
++                "vmov       d4,  d2                         \n"
++                "vmov       d0,  d6                         \n"
++                "bcs        .LPNG_FILTER_VALUE_PAETH_loop4  \n"
++            ".LPNG_FILTER_VALUE_PAETH_less4:                \n"
++                "FMRX       %[tmp], FPSCR                   \n"
++                : [tmp] "=r" (tmp)
++                : [i] "r" (i), [lp] "r" (lp), [pp] "r" (pp), [cp] "r" (cp),
++                  [rp] "r" (rp)
++                : "memory", "cc"
++            );
++        } else {
++            for (i = 0; i < istop; i++)   /* Use leftover rp,pp */
++            {
++                int a, b, c, pa, pb, pc, p;
++
++                a = *lp++;
++                b = *pp++;
++                c = *cp++;
++
++                p = b - c;
++                pc = a - c;
++
++        #ifdef PNG_USE_ABS
++                pa = abs(p);
++                pb = abs(pc);
++                pc = abs(p + pc);
++        #else
++                pa = p < 0 ? -p : p;
++                pb = pc < 0 ? -pc : pc;
++                pc = (p + pc) < 0 ? -(p + pc) : p + pc;
++        #endif
++
++                /*
++                   if (pa <= pb && pa <= pc)
++                      p = a;
++                   else if (pb <= pc)
++                      p = b;
++                   else
++                      p = c;
++                 */
++
++                p = (pa <= pb && pa <= pc) ? a : (pb <= pc) ? b : c;
++
++                *rp = (png_byte)(((int)(*rp) + p) & 0xff);
++                rp++;
++            }
++        }
++    #else
+          for (i = 0; i < istop; i++)   /* Use leftover rp,pp */
+          {
+             int a, b, c, pa, pb, pc, p;
+@@ -3067,6 +3585,7 @@
+             *rp = (png_byte)(((int)(*rp) + p) & 0xff);
+             rp++;
+          }
++    #endif
+          break;
+       }
+       default:
+Index: Android.mk
+===================================================================
+--- Android.mk	(revision 55656)
++++ Android.mk	(working copy)
+@@ -83,6 +83,10 @@
+ LOCAL_SHARED_LIBRARIES := \
+ 	libz
+ 
++# use ARM instruction instead of thumb2
++LOCAL_ARM_MODE := arm
++LOCAL_CFLAGS += -DTARGET_ARCH_ARM
++
+ LOCAL_MODULE:= libpng
+ 
+ LOCAL_COPY_HEADERS_TO := $(common_COPY_HEADERS_TO)
+Index: png.h
+===================================================================
+--- png.h	(revision 55656)
++++ png.h	(working copy)
+@@ -2940,9 +2940,15 @@
+ #  define png_get_uint_16(buf) ( *((png_uint_16p) (buf)))
+ #  define png_get_int_32(buf)  ( *((png_int_32p)  (buf)))
+ #else
++#ifdef TARGET_ARCH_ARM
++png_uint_32 png_get_uint_32(png_bytep buf);
++png_uint_16 png_get_uint_16(png_bytep buf);
++png_int_32  png_get_int_32(png_bytep buf);
++#else
+ extern PNG_EXPORT(png_uint_32,png_get_uint_32) PNGARG((png_bytep buf));
+ extern PNG_EXPORT(png_uint_16,png_get_uint_16) PNGARG((png_bytep buf));
+ extern PNG_EXPORT(png_int_32,png_get_int_32) PNGARG((png_bytep buf));
++#endif
+ #endif /* !PNG_READ_BIG_ENDIAN_SUPPORTED */
+ extern PNG_EXPORT(png_uint_32,png_get_uint_31)
+   PNGARG((png_structp png_ptr, png_bytep buf));
+Index: pngrtran.c
+===================================================================
+--- pngrtran.c	(revision 55656)
++++ pngrtran.c	(working copy)
+@@ -2137,8 +2137,46 @@
+          /* This changes the data from RGB to RGBX */
+          if (flags & PNG_FLAG_FILLER_AFTER)
+          {
++        #ifdef TARGET_ARCH_ARM
+             png_bytep sp = row + (png_size_t)row_width * 3;
+             png_bytep dp = sp  + (png_size_t)row_width;
++            int tmp = row_width - 1;
++            asm volatile (
++                "cmp        %[tmp], #0                              \n"
++                "ble        3f                                      \n"
++                "vdup.8     d3, %[lo_filler]                        \n"
++                "cmp        %[tmp], #8                              \n"
++                "blt        1f                                      \n"
++            "2:                                                     \n"
++                "sub        %[sp], %[sp], #24                       \n"
++                "vld3.8     {d0, d1, d2}, [%[sp]]                   \n"
++                "sub        %[tmp], %[tmp], #8                      \n"
++                "cmp        %[tmp], #8                              \n"
++                "sub        %[dp], %[dp], #32                       \n"
++                "vst4.8     {d0, d1, d2, d3}, [%[dp]]               \n"
++                "bge        2b                                      \n"
++                "cmp        %[tmp], #0                              \n"
++                "ble        3f                                      \n"
++            "1:                                                     \n"
++                "sub        %[sp], %[sp], #3                        \n"
++                "vld3.8     {d0[0], d1[0], d2[0]}, [%[sp]]          \n"
++                "sub        %[dp], %[dp], #4                        \n"
++                "subs       %[tmp], %[tmp], #1                      \n"
++                "vst4.8     {d0[0], d1[0], d2[0], d3[0]}, [%[dp]]   \n"
++                "bgt        1b                                      \n"
++            "3:                                                     \n"
++                "strb       %[lo_filler], [%[dp], #-1]              \n"
++                :   
++                : [tmp] "r" (tmp), [sp] "r" (sp), [dp] "r" (dp),
++                  [lo_filler] "r" (lo_filler)
++                : "memory", "cc"
++            ); 
++            row_info->channels = 4;
++            row_info->pixel_depth = 32;
++            row_info->rowbytes = row_width * 4;
++        #else
++            png_bytep sp = row + (png_size_t)row_width * 3;
++            png_bytep dp = sp  + (png_size_t)row_width;
+             for (i = 1; i < row_width; i++)
+             {
+                *(--dp) = lo_filler;
+@@ -2150,6 +2188,7 @@
+             row_info->channels = 4;
+             row_info->pixel_depth = 32;
+             row_info->rowbytes = row_width * 4;
++        #endif
+          }
+       /* This changes the data from RGB to XRGB */
+          else
