@@ -1,0 +1,34 @@
+From 71be0188f1d34ebcd4656e0ba7e574948d63d8b8 Mon Sep 17 00:00:00 2001
+From: Carlos Rafael Giani <dv@pseudoterminal.org>
+Date: Sun, 12 Oct 2014 19:06:52 +0200
+Subject: [PATCH] Enable share group workaround for Vivante GPUs
+
+This fixes the "blue background" bug with transparent HTML canvas areas
+
+Upstream-Status: Inappropriate [other]
+This fix enables the workarounds for Vivante GPUs on all platforms, even on
+ones where it may not be broken; even limiting it to android and linux might
+not be enough
+
+Signed-off-by: Carlos Rafael Giani <dv@pseudoterminal.org>
+---
+ gpu/config/gpu_driver_bug_list_json.cc | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/gpu/config/gpu_driver_bug_list_json.cc b/gpu/config/gpu_driver_bug_list_json.cc
+index 5477c59..4b8a873 100644
+--- a/gpu/config/gpu_driver_bug_list_json.cc
++++ b/gpu/config/gpu_driver_bug_list_json.cc
+@@ -406,9 +406,6 @@ const char kGpuDriverBugListJson[] = LONG_STRING_CONST(
+       "id": 34,
+       "cr_bugs": [179250, 229643, 230896],
+       "description": "Share groups are not working on (older?) Vivante drivers",
+-      "os": {
+-        "type": "android"
+-      },
+       "gl_extensions": ".*GL_VIV_shader_binary.*",
+       "features": [
+         "use_virtualized_gl_contexts"
+-- 
+1.9.1
+
